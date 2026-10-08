@@ -1,0 +1,23 @@
+# 密钥/隐私 — 绝不入库
+.env
+*.key
+*.pem
+
+# 中间产物(成片可留少量示例, 其余忽略)
+assets/
+output/*
+!output/.gitkeep
+scripts/王阳明事上磨练.json
+
+# 字体/大文件
+fonts/
+*.ttf
+*.ttc
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 系统
+.DS_Store
