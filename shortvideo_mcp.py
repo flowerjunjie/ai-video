@@ -11,6 +11,16 @@ import json, os, subprocess, sys, textwrap, asyncio, tempfile
 from typing import Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 加载 .env(若存在, 只补缺失, 不覆盖已 set 的环境变量)
+_ENV_FILE = os.path.join(BASE_DIR, ".env")
+if os.path.exists(_ENV_FILE):
+    for _ln in open(_ENV_FILE):
+        _ln = _ln.strip()
+        if _ln and not _ln.startswith("#") and "=" in _ln:
+            _k, _v = _ln.split("=", 1)
+            os.environ.setdefault(_k, _v)
+
 SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 OUTPUT_DIR  = os.path.join(BASE_DIR, "output")
 ASSETS_DIR  = os.path.join(BASE_DIR, "assets")
@@ -21,20 +31,22 @@ os.makedirs(ASSETS_DIR,  exist_ok=True)
 FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
 VOICE = "zh-CN-YunyangNeural"  # 男声·专业·可靠
 
-# 大脑(AGNES / Anthropic 兼容端点)—— 运行时注入
-#   ANTHROPIC_API_KEY / AGNES_API_KEY  : 凭证
-#   ANTHROPIC_BASE_URL / AGNES_BASE_URL : AGNES 网关地址
-#   SV_MODEL                            : 模型名(默认 claude-sonnet-4-6)
-AI_KEY      = os.environ.get("AGNES_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
-AI_BASE_URL = os.environ.get("AGNES_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL") or None
-AI_MODEL    = os.environ.get("SV_MODEL", "claude-sonnet-4-6")
+# 大脑(AGNES OpenAI 兼容端点, 默认; Anthropic 兼容端点作 fallback)—— 运行时注入
+#   AGNES_API_KEY / ANTHROPIC_API_KEY   : 凭证
+#   AGNES_BASE_URL  (默认 https://apihub.agnes-ai.com/v1)
+#   ANTHROPIC_BASE_URL
+#   SV_MODEL  (默认 agnes-3.0-flash)   SV_PROVIDER (agnes|anthropic, 默认 auto)
+AI_KEY        = os.environ.get("AGNES_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+AGNES_URL     = os.environ.get("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1")
+ANTHRO_URL    = os.environ.get("ANTHROPIC_BASE_URL", "")
+AI_MODEL      = os.environ.get("SV_MODEL", "agnes-3.0-flash")
+SV_PROVIDER   = os.environ.get("SV_PROVIDER", "auto")  # auto: 有 AGNES_API_KEY 走 agnes, 否则 anthropic
 
 # 素材库(占位符,先接上代码, 没 key 自动退回霓虹网格)
 #   PEXELS_API_KEY / PIXABAY_API_KEY
 PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "")
-PEXELS_URL = "https://api.pexels.com/videos"
-PIXABAY_URL = "https://pixabay.com/api/videos/"
+PEXELS_URL = "https://api.pexels.com/v1/search"
 
 # ── 核心工具函数(与 pipeline.py 对齐) ─────────────────────────────────────────
 
@@ -79,24 +91,39 @@ _SYS = (
     "②引用古语必须标注真实出处,不确定的不写;③口播 80-150 字、语速约4字/秒;④分镜6-8个、各3-5秒。"
 )
 
+def _provider():
+    """auto: 有 AGNES_API_KEY 走 agnes(openai端点), 否则 anthropic。"""
+    if os.environ.get("AGNES_API_KEY") or SV_PROVIDER in ("agnes","auto"):
+        if os.environ.get("AGNES_API_KEY") and (SV_PROVIDER in ("agnes","auto") or not os.environ.get("ANTHROPIC_API_KEY")):
+            return "agnes"
+    return "anthropic"
+
 def _gen_script_ai(topic, column, tone):
-    """调用 AGNES(Anthropic 兼容)生成完整脚本 dict。无 key 时返回 None。"""
+    """调用 AGNES(OpenAI 兼容,默认)或 Anthropic 生成完整脚本 dict。无 key 返回 None。"""
     if not AI_KEY:
         return None
-    import anthropic
-    client = anthropic.Anthropic(api_key=AI_KEY, base_url=AI_BASE_URL) if AI_BASE_URL \
-        else anthropic.Anthropic(api_key=AI_KEY)
     user = (f"主题: {topic}\n栏目: {column}\n语调: {tone}\n"
-            "请输出 JSON,字段: 口播/字幕分段/分镜[{画面,时长}]/标题候选[3]/封面文案/引文出处/引文校验")
+            "请只输出 JSON(无 markdown 代码块),字段: "
+            "口播/字幕分段/分镜[{画面,时长}]/标题候选[3]/封面文案/引文出处/引文校验/免费素材关键词[3]")
+    prov = _provider()
     try:
-        resp = client.messages.create(
-            model=AI_MODEL, max_tokens=1500, system=_SYS,
-            messages=[{"role":"user","content":user}])
-        txt = "".join(b.text for b in resp.content if getattr(b,"type","")=="text")
+        if prov == "agnes":
+            import openai
+            cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=1500,
+                  messages=[{"role":"system","content":_SYS},
+                            {"role":"user","content":user}])
+            txt = r.choices[0].message.content or ""
+        else:
+            import anthropic
+            cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+            r = cli.messages.create(model=AI_MODEL, max_tokens=1500, system=_SYS,
+                  messages=[{"role":"user","content":user}])
+            txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+        txt = txt.strip().lstrip("`").rstrip("`")
         data = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
-        data.setdefault("标题候选", [])
-        data.setdefault("分镜", [])
-        data.setdefault("字幕分段", [])
+        for k in ("标题候选","分镜","字幕分段"):
+            data.setdefault(k, [])
         return data
     except Exception as e:
         return {"_error": str(e)[:200]}
@@ -126,37 +153,58 @@ def _gen_script_offline(topic, column, tone):
 def _gen_script(topic, column, tone):
     ai = _gen_script_ai(topic, column, tone)
     if ai and "_error" not in ai:
-        ai["_engine"] = f"agnes/{AI_MODEL}"
+        ai["_engine"] = f"{_provider()}/{AI_MODEL}"
         return ai
+    reason = (ai or {}).get("_error", "key 未配置")
     off = _gen_script_offline(topic, column, tone)
     off["_engine"] = "offline-fallback"
+    off["_ai_error"] = reason
     return off
 
 # ── 素材库:Pexels/Pixabay,无 key 退回霓虹网格 ───────────────────────────────
 
-def _fetch_assets(keywords, workdir):
-    """按关键词拉免费 B-roll mp4。有 PEXELS_KEY/PIXABAY_KEY 才真拉;否则返回 []。"""
-    if not (PEXELS_KEY or PIXABAY_KEY):
+def _fetch_images(keywords, workdir):
+    """按关键词拉 Pexels 免费图片(curl 实现, 避免 urllib 代理问题)。
+    返回 [(关键词, 图片路径), ...]; 无 key 或拉取失败返回 []。"""
+    if not PEXELS_KEY:
         return []
-    import urllib.request, urllib.parse
+    import shlex, urllib.parse
     got = []
-    for i, kw in enumerate(keywords[:3]):
+    for i, kw in enumerate(keywords[:6]):
         try:
-            if PEXELS_KEY:
-                u = f"{PEXELS_URL}?query={urllib.parse.quote(kw)}&per_page=1&size=medium"
-                req = urllib.request.Request(u, headers={"Authorization": PEXELS_KEY})
-                d = json.load(urllib.request.urlopen(req, timeout=20))
-                url = d["videos"][0]["video_files"][0]["link"]
-            elif PIXABAY_KEY:
-                u = f"{PIXABAY_URL}?key={PIXABAY_KEY}&video_type=animation&min_width=720&{urllib.parse.urlencode({'q': kw})}"
-                d = json.load(urllib.request.urlopen(u, timeout=20))
-                url = d["hits"][0]["videos"]["small"]["url"]
-            p = os.path.join(workdir, f"asset_{i}.mp4")
-            urllib.request.urlretrieve(url, p)
-            got.append(p)
+            q = kw if kw.isascii() else "zen meditation"
+            qenc = urllib.parse.quote(q)
+            api = ["curl", "-s", "--max-time", "20",
+                  f"https://api.pexels.com/v1/search?query={qenc}&per_page=1",
+                  "-H", f"Authorization: {PEXELS_KEY}"]
+            out = subprocess.run(api, capture_output=True, text=True, timeout=25).stdout
+            photos = json.loads(out).get("photos", [])
+            if not photos:
+                continue
+            s = photos[0].get("src", {})
+            url = (s.get("large2x") if isinstance(s, dict) else None) or \
+                  (s.get("large") if isinstance(s, dict) else None) or \
+                  photos[0].get("url") or ""
+            if not url:
+                continue
+            p = os.path.join(workdir, f"img_{i}.jpg")
+            dl = ["curl", "-s", "-L", "--max-time", "30", "-o", p,
+                  "-H", "User-Agent: Mozilla/5.0", url]
+            subprocess.run(dl, timeout=35)
+            if os.path.getsize(p) > 1000:
+                got.append((kw, p))
         except Exception:
             continue
     return got
+
+def _image_to_kenburns(img, dur, out):
+    """图片 + 缓慢缩放平移(Ken Burns)→ 9:16 视频, 真实画面质感"""
+    _run(["ffmpeg","-y","-loop","1","-i",img,"-t",str(dur),
+          "-vf","scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+               "zoompan=z='1.05+0.04*in':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+               f"d={int(dur*30)}:s=1080x1920:fps=30,format=yuv420p",
+          "-c:v","libx264","-pix_fmt","yuv420p","-r","30","-an", out], timeout=120)
+    return out
 
 # ── MCP server ─────────────────────────────────────────────────────────────────
 
@@ -178,11 +226,13 @@ def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理
     data = _gen_script(topic, column, tone)
     data["id"] = safe_id
     json.dump(data, open(path,"w"), ensure_ascii=False, indent=2)
+    eng = data.get("_engine", "")
     return {"ok": True, "id": safe_id, "path": path,
-            "engine": data.get("_engine"),
-            "msg": ("已用 AGNES 生成完整脚本" if data.get("_engine","").startswith("agnes")
-                    else "AGNES key 未配置,已生成离线骨架,请覆写口播/分镜"),
-            "compose_hint": f"填好后调用 compose_video('{safe_id}') 出成片"}
+            "engine": eng or "unknown",
+            "ai_error": data.get("_ai_error"),
+            "msg": ("已用 AGNES 生成完整脚本" if eng.startswith("agnes")
+                    else f"AGNES 未生效({data.get('_ai_error','key 未配置')}),已生成离线骨架,请覆写口播/分镜"),
+            "compose_hint": f"调用 compose_video('{safe_id}') 出成片"}
 
 @mcp.tool()
 def tts_voice(text: str, out: str = "", voice: str = VOICE) -> dict:
@@ -217,7 +267,8 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     os.makedirs(workdir, exist_ok=True)
     # 若没有字幕分段, 从分镜数 × 时长推算等宽
     scenes = data["分镜"]
-    per_dur = [sc.get("时长",3) for sc in scenes]
+    # 强制转为 float, 防止 AGNES 返回字符串导致 sum 报错
+    per_dur = [float(sc.get("时长", 3)) for sc in scenes]
     total = sum(per_dur)
     # 先跑 TTS 测时长
     mp3 = os.path.join(workdir,"voice.mp3")
@@ -226,20 +277,18 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
     scale = 1.0 if dur_audio <= total else dur_audio / total
-    # 素材: 有 Pexels/Pixabay key 就拉真实 B-roll, 没有退回霓虹网格
-    broll = _fetch_assets(data.get("免费素材关键词", []), workdir)
+    # 素材: 有 Pexels key 就拉真实图片做 Ken Burns B-roll, 没有退回霓虹网格
+    imgs = _fetch_images(data.get("免费素材关键词", []), workdir)
     vids = []
     for i, d in enumerate(per_dur):
-        if broll:
-            a = broll[i % len(broll)]
-            _run(["ffmpeg","-y","-stream_loop","-1","-i",a,"-t",str(d),
-                  "-vf","scale=1080:1920:force_original_aspect_ratio=increase,"
-                       "crop=1080:1920,setsar=1","-c:v","libx264","-pix_fmt","yuv420p",
-                  "-r","30","-an", os.path.join(workdir, f"scene_{i}.mp4")], timeout=120)
+        if imgs:
+            kw, ip = imgs[i % len(imgs)]
+            target = d * scale
+            _image_to_kenburns(ip, target, os.path.join(workdir, f"scene_{i}.mp4"))
             vids.append(os.path.join(workdir, f"scene_{i}.mp4"))
         else:
             vids.append(_render_scene(d*scale, workdir, i))
-    _assets_used = bool(broll)
+    _assets_used = bool(imgs)
     # 拼接
     listp = os.path.join(workdir,"list.txt")
     open(listp,"w").write("\n".join(f"file '{v}'" for v in vids))
