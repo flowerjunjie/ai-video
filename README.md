@@ -10,8 +10,13 @@
      → edge-tts 免费配音(5 种中文音色)
      → Pexels/Pixabay 免费 B-roll(有 key) 或 霓虹网格 fallback(无 key)
      → ffmpeg 合成(拼接/动态字幕/9:16/封面)
+     → 半自动发布物料(标题/标签/合规/AI标注) → 平台手动上传
+     → 手动导入数据回流(播放/完播/赞评转)
+     → AGNES 分析回流 → 生成下一批高潜选题 → 回到写脚本   ⟲ 全自动化闭环
 ```
 全部本地 + 免费 API,单条成片 < 2 分钟,CPU 即可。
+发布与回流默认「半自动」:个人号无企业发布资质,物料一键备齐后人工上传,
+数据手动复制导入即可驱动下一批选题——链路零额外成本、零 API 依赖。
 
 ## 快速开始
 ```bash
@@ -31,6 +36,9 @@ python3 shortvideo_mcp.py
 | `write_script(topic, column, tone)` | 生成完整脚本 JSON(口播/分镜/字幕/标题/封面) |
 | `tts_voice(text, voice)` | 免费配音,换音色试听 |
 | `compose_video(script_id)` | 一键出成片 + 封面 |
+| `prepare_publish(ids, platform, schedule)` | 半自动发布物料包(标题/标签/合规/AI标注),输出可复制文案 |
+| `import_metrics([...], source)` | 手动导入播放/完播/赞评转,结构化落盘 |
+| `auto_next_topics(n)` | 读回流数据,AGNES 出下一批高潜选题并写回 scripts/ |
 | `list_scripts()` | 查脚本库存 |
 
 MCP 客户端配置:

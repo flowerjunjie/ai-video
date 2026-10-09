@@ -7,6 +7,10 @@
 assets/
 output/*
 !output/.gitkeep
+publish/*
+!publish/.gitkeep
+metrics/*
+!metrics/.gitkeep
 scripts/王阳明事上磨练.json
 
 # 字体/大文件

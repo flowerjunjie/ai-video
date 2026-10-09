@@ -7,7 +7,7 @@
 MCP client 配置:
   {"mcpServers": {"shortvideo": {"command": "python3", "args": ["/path/to/shortvideo_mcp.py"]}}}
 """
-import json, os, subprocess, sys, textwrap, asyncio, tempfile
+import json, os, re, subprocess, sys, textwrap, asyncio, tempfile, datetime
 from typing import Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,9 +24,13 @@ if os.path.exists(_ENV_FILE):
 SCRIPTS_DIR = os.path.join(BASE_DIR, "scripts")
 OUTPUT_DIR  = os.path.join(BASE_DIR, "output")
 ASSETS_DIR  = os.path.join(BASE_DIR, "assets")
+PUBLISH_DIR = os.path.join(BASE_DIR, "publish")
+METRICS_DIR = os.path.join(BASE_DIR, "metrics")
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR,  exist_ok=True)
 os.makedirs(ASSETS_DIR,  exist_ok=True)
+os.makedirs(PUBLISH_DIR, exist_ok=True)
+os.makedirs(METRICS_DIR, exist_ok=True)
 
 FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
 VOICE = "zh-CN-YunyangNeural"  # 男声·专业·可靠
@@ -206,6 +210,49 @@ def _image_to_kenburns(img, dur, out):
           "-c:v","libx264","-pix_fmt","yuv420p","-r","30","-an", out], timeout=120)
     return out
 
+# ── 合规 + 回流选题 ───────────────────────────────────────────────────────────
+
+_BANNED = ["改命","开光","消灾","招财","转运","祖荫","灵验","包治","根治","神效"]
+
+def _check_banned(text: str):
+    """合规护栏: 命中禁词即返回(防玄学承诺/贩卖焦虑), 供发布物料逐条校验。"""
+    hits = [w for w in _BANNED if w in text]
+    return {"命中": hits, "通过": not hits}
+
+def _suggest_topics_ai(rows, n):
+    """用 AGNES/Anthropic 读回流数据, 出下一批 n 个高潜选题。无 key/失败返回 None。"""
+    if not AI_KEY:
+        return None
+    hot = sorted(rows, key=lambda r: r.get("完播率",0), reverse=True)
+    brief = "\n".join(f"- {r['id']}: 完播{r.get('完播率',0)}% 播放{r.get('播放',0)}" for r in hot[:10])
+    user = (f"已有数据回流:\n{brief}\n\n"
+            f"完播率高的题材请深耕换角度, 完播低的规避。"
+            f"给我 {n} 个下一批短视频选题(仍属'用AI讲古·释道儒/王阳明×AI认知'定位),"
+            "每个一行, 只输出 选题1 / 选题2 ... (无编号无解释), 理性硬核、不卖焦虑。")
+    prov = _provider()
+    try:
+        import re
+        if prov == "agnes":
+            import openai
+            cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=400,
+                  messages=[{"role":"system","content":"你是'用AI讲古'选题策略师, 只输出选题列表。"},
+                            {"role":"user","content":user}])
+            txt = r.choices[0].message.content or ""
+        else:
+            import anthropic
+            cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+            r = cli.messages.create(model=AI_MODEL, max_tokens=400,
+                  system="你是'用AI讲古'选题策略师, 只输出选题列表。",
+                  messages=[{"role":"user","content":user}])
+            txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+        topics = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+        topics = [re.sub(r"^\d+[\.、\s]*|选题\d*[:：]?\s*", "", t).strip() for t in topics]
+        topics = [t for t in topics if t][:n]
+        return topics or None
+    except Exception:
+        return None
+
 # ── MCP server ─────────────────────────────────────────────────────────────────
 
 from mcp.server.mcpserver import MCPServer
@@ -318,6 +365,147 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     return {"ok": True, "mp4": out_mp4, "cover": cover,
             "duration_s": round(dur_audio,1), "size_mb": round(sz,1),
             "visual": "free-B-roll" if _assets_used else "neon-grid(fallback, 配 PEXELS/PIXABAY key 后自动升级)"}
+
+@mcp.tool()
+def prepare_publish(ids, platform: str = "抖音", schedule: str = "今天 18:00") -> dict:
+    """
+    半自动发布:从 scripts/<id>.json + output/<id>.* 生成各平台发布物料包(标题/封面/标签/合规/AI标注),
+    输出 publish/发布计划.json + 可复制文案。不直接调平台 API(个人号无企业发布资质),
+    物料齐了人一键粘贴/上传即可。
+    参数: ids=脚本id列表(或 "all"), platform=抖音/视频号/B站, schedule=建议发布时间
+    返回: {发布计划路径, 物料条数, 各条摘要}
+    """
+    import re
+    all_ids = list_scripts()
+    if ids in ("all", "*", None):
+        ids = all_ids
+    elif isinstance(ids, str):
+        ids = [s.strip() for s in re.split(r"[,\s]+", ids) if s.strip()]
+    plan = []
+    for sid in ids:
+        spath = os.path.join(SCRIPTS_DIR, f"{sid}.json")
+        if not os.path.exists(spath):
+            plan.append({"id": sid, "ok": False, "msg": "脚本不存在"}); continue
+        d = json.load(open(spath))
+        titles = d.get("标题候选") or []
+        cover_text = d.get("封面文案", "")
+        kw = d.get("免费素材关键词") or []
+        mp4 = os.path.join(OUTPUT_DIR, f"{sid}.mp4")
+        cover = os.path.join(OUTPUT_DIR, f"{sid}_cover.png")
+        tags = [d.get("栏目", "用AI讲古"), "王阳明", "认知", "哲学", "成长",
+                *kw[:3]]
+        plan.append({
+            "id": sid, "ok": True,
+            "平台": platform, "排期": schedule,
+            "标题": (titles[0] if titles else f"{sid} · 换个角度读"),
+            "标题备选": titles[1:],
+            "封面文案": cover_text,
+            "标签": ["#" + t for t in tags],
+            "标签串": " ".join("#" + t for t in tags),
+            "正文字案": d.get("口播", "")[:120],
+            "合规标注": "内容由 AI 生成(依据各平台 AI 内容披露规则)",
+            "禁用语检查": _check_banned(d.get("口播", "") + " " + " ".join(titles)),
+            "成片": mp4 if os.path.exists(mp4) else "(未合成,先 compose_video)",
+            "封面": cover if os.path.exists(cover) else "(未合成)",
+        })
+    outp = os.path.join(PUBLISH_DIR, "发布计划.json")
+    json.dump({"platform": platform, "schedule": schedule,
+               "生成时间": datetime.datetime.now().isoformat(timespec="seconds"),
+               "物料": plan}, open(outp, "w"), ensure_ascii=False, indent=2)
+    # 可复制文本(逐条 标题+标签+AI标注), 人工粘贴用
+    copyp = os.path.join(PUBLISH_DIR, "复制文案.txt")
+    with open(copyp, "w") as f:
+        for m in plan:
+            if m.get("ok"):
+                f.write(f"[{m['id']}] {m['标题']}\n{m['标签串']}\n{m['合规标注']}\n\n")
+    return {"ok": True, "plan_path": outp, "copy_path": copyp,
+            "count": len(plan),
+            "summary": [{"id": m["id"], "ok": m.get("ok"),
+                         "title": m.get("标题"),
+                         "违规": m.get("禁用语检查")} for m in plan]}
+
+@mcp.tool()
+def import_metrics(metrics: list, source: str = "手动复制") -> dict:
+    """
+    手动导入各平台数据回流:把(人工)复制下来的 播放/完播率/点赞/评论/转发
+    结构化落盘到 metrics/, 供 auto_next_topics 分析。零 API 依赖。
+    参数: metrics=[{id, 平台, 播放, 完播率(%), 点赞, 评论, 转发}, ...]
+    返回: {落盘路径, 条数, 平均完播率, 数据最好/最差的 id}
+    """
+    import datetime, statistics
+    if isinstance(metrics, str):
+        metrics = json.loads(metrics)
+    rows = []
+    for m in metrics:
+        row = {"id": m.get("id", ""), "平台": m.get("平台", "抖音"),
+               "播放": int(m.get("播放", 0)),
+               "完播率": float(m.get("完播率", 0)),
+               "点赞": int(m.get("点赞", 0)),
+               "评论": int(m.get("评论", 0)),
+               "转发": int(m.get("转发", 0))}
+        # 交互率 = (赞+评+转)/播放, 衡量内容钩子强度
+        row["交互率"] = round((row["点赞"]+row["评论"]+row["转发"])/row["播放"], 4) if row["播放"] else 0
+        # 关联脚本标题, 便于回流归因
+        spath = os.path.join(SCRIPTS_DIR, f"{row['id']}.json")
+        if os.path.exists(spath):
+            row["栏目"] = json.load(open(spath)).get("栏目", "")
+        rows.append(row)
+    outp = os.path.join(METRICS_DIR, f"回流_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    json.dump({"source": source, "rows": rows}, open(outp, "w"), ensure_ascii=False, indent=2)
+    # 同步一份"最新"快照, 供 auto_next_topics 直接读
+    latest = os.path.join(METRICS_DIR, "最新回流.json")
+    json.dump(rows, open(latest, "w"), ensure_ascii=False, indent=2)
+    com = [r["完播率"] for r in rows if r["完播率"]] or [0]
+    best = max(rows, key=lambda r: r["完播率"]) if rows else None
+    worst = min(rows, key=lambda r: r["完播率"]) if rows else None
+    return {"ok": True, "path": outp, "latest": latest, "count": len(rows),
+            "avg完播率": round(statistics.mean(com), 1),
+            "最好": (best["id"] if best else None, best["完播率"] if best else 0),
+            "最差": (worst["id"] if worst else None, worst["完播率"] if worst else 0)}
+
+@mcp.tool()
+def auto_next_topics(n: int = 5) -> dict:
+    """
+    数据回流闭环的大脑:读 metrics/最新回流.json, 用 AGNES 分析哪类题材完播高,
+    生成下批 n 个选题并直接写进 scripts/(喂回 write_script), 完成"发→收→学→再产"。
+    无回流数据/无 key 时返回引导, 不硬造。
+    返回: {分析结论, 新选题脚本路径列表, 引擎}
+    """
+    latest = os.path.join(METRICS_DIR, "最新回流.json")
+    if not os.path.exists(latest):
+        return {"ok": False, "msg": "尚无回流数据, 先 import_metrics 导入一期数据"}
+    rows = json.load(open(latest))
+    if not rows:
+        return {"ok": False, "msg": "回流为空"}
+    rank = sorted(rows, key=lambda r: r.get("完播率", 0), reverse=True)
+    top_ids = [r["id"] for r in rank[:3]]
+    # 低完播 = 尾部且不与头部重叠(小样本下防止"最高=最低"的假象)
+    low = [r["id"] for r in reversed(rank[-3:])]
+    low = [x for x in low if x not in top_ids] or ([rank[-1]["id"]] if len(rows) > 1 else [])
+    insight = {
+        "高完播题材": top_ids,
+        "低完播题材": low,
+        "平均完播率": round(sum(r.get("完播率",0) for r in rows)/len(rows),1),
+        "样本数": len(rows),
+    }
+    # 有 key 让 AGNES 出"下一批"选题; 无 key 退回"复制高完播题材换角度"的规则
+    ai_topics = _suggest_topics_ai(rows, n) if AI_KEY else None
+    if ai_topics:
+        topics, engine = ai_topics, f"{_provider()}/{AI_MODEL}"
+    else:
+        topics = [f"{r['id']} · 换个角度重讲" for r in rank[:n]]
+        engine = "offline-repeat-highcomple"
+    created, skipped = [], []
+    for i, t in enumerate(topics[:n]):
+        safe = re.sub(r"[^a-z0-9一-鿿]+", "_", t.strip()) or f"next_{i}"
+        p = os.path.join(SCRIPTS_DIR, f"{safe}.json")
+        if os.path.exists(p):
+            skipped.append(safe); continue
+        r = write_script(t, column="觉醒·读古人", tone="理性硬核")
+        (created if r.get("ok") else skipped).append(safe)
+    return {"ok": True, "insight": insight, "新选题": created,
+            "跳过已存在": skipped, "引擎": engine,
+            "下一步": f"逐条 compose_video('{created[0]}') 出片"}
 
 @mcp.tool()
 def list_scripts() -> list:
