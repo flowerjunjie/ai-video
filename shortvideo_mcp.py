@@ -90,9 +90,22 @@ def _tts(text, out_mp3, voice=VOICE):
 # ── 大脑:AGNES/Anthropic 自动生成脚本,无 key 走离线规则 fallback ──────────────
 
 _SYS = (
-    "你是'用AI讲古'短视频编剧。把古圣贤思想(AI时代生存操作系统)转成口播。\n"
-    "硬性要求:①理性硬核,不贩卖焦虑、不做玄学承诺(禁用'改命/开光/消灾',改用'认知/方法/心学');\n"
-    "②引用古语必须标注真实出处,不确定的不写;③口播 80-150 字、语速约4字/秒;④分镜6-8个、各3-5秒。"
+    "你是'用AI讲古'短视频首席编剧。把古圣贤思想(AI时代生存操作系统)转成有张力的口播,\n"
+    "像一位通透又克制的前辈,不是念稿子、不是科普、不是喊口号。\n"
+    "\n【硬性合规】理性硬核,不贩卖焦虑、不做玄学承诺(禁用'改命/开光/消灾/转运/灵验'),"
+    "一切落到'认知/方法/心学/底层逻辑';引用古语必须标注真实出处与篇目,拿不准就写成"
+    "'古人有句话,大意是…',绝不编造字句。\n"
+    "\n【叙事弧——每条必须走完,这是深度的核心】\n"
+    "  ①钩子(0-3s):抛一个反常识或扎心的一句,逼用户停下,绝不平铺主题;\n"
+    "  ②冲突:点破大多数人停在字面/停在情怀,戳中真正的痛点或矛盾;\n"
+    "  ③古语+出处:亮出古圣贤原话,标出处,建立权威;\n"
+    "  ④案例/场景:落到一个具体的当代场景(刷手机/加班/低谷/AI对话),让古语'活'起来;\n"
+    "  ⑤金句:一句可被截图转发、能扎心的话,全片记忆点;\n"
+    "  ⑥行动:给一个可立即做的小事,不画饼、不给'听完就变'的假承诺。\n"
+    "\n【规格】口播 280-420 字(边写边默读:按 3.5 字/秒约 80-120s, 平台裁到 60-90s;"
+    "宁多勿短, 深度优先)。分镜 12-16 个、每个 5-7s;每段字幕≤14字、贴合口播节奏;不要套话,每个字都为'留人'服务。\n"
+    "\n【人设口吻】短句、留白、敢下判断;多用'你看/你有没有想过/其实';"
+    "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。"
 )
 
 def _provider():
@@ -107,21 +120,24 @@ def _gen_script_ai(topic, column, tone):
     if not AI_KEY:
         return None
     user = (f"主题: {topic}\n栏目: {column}\n语调: {tone}\n"
-            "请只输出 JSON(无 markdown 代码块),字段: "
-            "口播/字幕分段/分镜[{画面,时长}]/标题候选[3]/封面文案/引文出处/引文校验/免费素材关键词[3]")
+            "请只输出 JSON(无 markdown 代码块),字段:\n"
+            "钩子/冲突/古语/古语出处/当代案例/金句/行动指引/口播/字幕分段/分镜[{画面,时长}]"
+            "/标题候选[3]/封面文案/引文校验/免费素材关键词[4]。\n"
+            "口播必须把 钩子→冲突→古语→案例→金句→行动 六段串成一条完整叙事(200-320字),"
+            "不是要点罗列;分镜 10-14 个对齐六段叙事;字幕分段逐句贴合口播、每句≤14字。")
     prov = _provider()
     try:
         if prov == "agnes":
             import openai
             cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
-            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=1500,
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=2500,
                   messages=[{"role":"system","content":_SYS},
                             {"role":"user","content":user}])
             txt = r.choices[0].message.content or ""
         else:
             import anthropic
             cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
-            r = cli.messages.create(model=AI_MODEL, max_tokens=1500, system=_SYS,
+            r = cli.messages.create(model=AI_MODEL, max_tokens=2500, system=_SYS,
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
         txt = txt.strip().lstrip("`").rstrip("`")
@@ -133,25 +149,40 @@ def _gen_script_ai(topic, column, tone):
         return {"_error": str(e)[:200]}
 
 def _gen_script_offline(topic, column, tone):
-    """无 key 兜底:规则化骨架,可手动覆写。"""
-    n = 7
+    """无 key 兜底:同样走六段式叙事骨架(钩子→冲突→古语→案例→金句→行动),
+    比旧版有真实古语占位+可行动钩子,深度对齐 AGNES;标注为骨架待人工雕琢。"""
+    kb = ("古人说,知者不惑。你被{t}绕进去,不是它太难,是你在用情绪答题,不是用脑子。"
+          "AI能给你一万条建议,却没有一条是你自己'想透'的。"
+          "别急着翻篇,先把{t}当成一道题慢慢拆——拆到心里那个'哦,原来如此',才算真懂。"
+          "今天别求多,就做对跟{t}相关的一件小事。事上磨练,磨一磨,人就定一分。").format(t=topic)
     return {
         "id": None, "栏目": column,
-        "标题候选": [f"{topic} · 换个角度读", f"{topic} · 一句入心", f"{topic} · 理性视角"],
+        "钩子": f"你有没有觉得,关于{topic},你懂的道理,一件都做不到?",
+        "冲突": "不是道理不对,是你停在'知道',没到'看清';停在情怀,没到方法。",
+        "古语": "知者不惑 / 事上磨练(占位,需人工核实真实篇目出处)",
+        "古语出处": "占位·需人工核实(离线骨架未连AI)",
+        "当代案例": "你刷了十条关于{t}的视频,合上手机,该怎么做还是不知道——这就是停在字面.".format(t=topic),
+        "金句": "真正稀缺的,不是信息,是你把知落到行的那一下。",
+        "行动指引": "今天只做跟{t}相关的一件小事,做完再睡.".format(t=topic),
+        "标题候选": [f"{topic} · 为什么懂了也做不到", f"{topic} · 别停在字面", f"{topic} · 一句入心"],
         "封面文案": f"{topic} · 理性视角",
-        "口播": f"关于{topic},多数人停在字面,停在情怀。但{tone}地看,它其实是AI时代的一套生存算法:{topic}给出的,不是答案,是'怎么看'的方法。真正稀缺的,不是信息,是你把它落到行动的那一下。先把{topic}想透,再做,心就定一分。",
-        "字幕分段": [f"关于{topic},多数人停在字面", "停在情怀,没看穿底层逻辑",
-                    f"{tone}地看,它是一套生存算法", f"{topic}给的不是答案,是方法",
-                    "真正稀缺的,是把知落到行", "先把事想透,心就定一分"],
-        "分镜": [{"画面": "黑场展开,古卷+数字粒子", "时长": 4},
-                 {"画面": "书桌/专注特写", "时长": 4},
-                 {"画面": "电路与文字叠加", "时长": 4},
-                 {"画面": "眼瞳聚焦,粒子汇聚", "时长": 4},
-                 {"画面": "果断落笔瞬间", "时长": 4},
-                 {"画面": "古与未来并置", "时长": 4},
-                 {"画面": "黑场,单光点定格", "时长": 4}],
-        "引文出处": "待填写", "引文校验": "无AI生成,待人工核实古语",
-        "_engine": "offline-fallback",
+        "口播": kb,
+        "字幕分段": [f"关于{topic},你懂的道理", "一件都没做到吧", "不是道理错",
+                    "是你停在'知道'", "知者不惑,是看清", "AI给不了你那一下",
+                    f"把{topic}当道题拆", "拆到心里'哦'"],
+        "分镜": [{"画面": "黑场,一行字砸出钩子", "时长": 5},
+                 {"画面": "反复滑动手机的疲惫特写", "时长": 5},
+                 {"画面": "古卷展开,数字粒子浮现", "时长": 5},
+                 {"画面": "'知者不惑'四字逐字显现", "时长": 5},
+                 {"画面": "书桌前独自拆解问题", "时长": 5},
+                 {"画面": "电路与文字交叠", "时长": 5},
+                 {"画面": "眼瞳聚焦,粒子汇聚", "时长": 5},
+                 {"画面": "果断落笔/写下第一件事", "时长": 5},
+                 {"画面": "古与未来并置", "时长": 5},
+                 {"画面": "黑场,单光点定格金句", "时长": 5}],
+        "引文校验": "离线骨架:古语为占位,发布前必须人工核实真实出处",
+        "免费素材关键词": ["zen meditation", "study desk focus", "circuit board macro", "night window light"],
+        "_engine": "offline-fallback(v2-六段式)",
     }
 
 def _gen_script(topic, column, tone):
@@ -164,6 +195,42 @@ def _gen_script(topic, column, tone):
     off["_engine"] = "offline-fallback"
     off["_ai_error"] = reason
     return off
+
+def _polish_ai(data):
+    """雕琢已有脚本的文案:把口播重写得更扎心(钩子更强/金句更狠/案例更具体),
+    同步重写字幕分段与分镜画面。有 key 走 AGNES/Anthropic, 无 key 返回 None。"""
+    if not AI_KEY:
+        return None
+    prov = _provider()
+    old = json.dumps({k: data.get(k) for k in
+        ("主题","口播","古语","当代案例","金句","行动指引") if data.get(k)},
+        ensure_ascii=False)
+    user = (f"这是'用AI讲古'一条视频现有脚本:\n{old}\n\n"
+            "请只输出一版雕琢后的 JSON(无代码块),字段: "
+            "口播/字幕分段/分镜[{画面,时长}]。\n"
+            "要求:①保留原古语与出处不改;②把口播写成六段式(钩子→冲突→古语→案例→金句→行动),"
+            "200-320字、短句有张力、去套话、每句都在'留人';③金句要能被截图转发;"
+            "④分镜 10-14 个对齐六段,每镜4-7s;⑤字幕逐句贴合、每句≤14字。")
+    sys_ = _SYS + "\n【本次任务】只在给定的古语/出处/案例/金句基础上雕琢口播表达,不新造古语。"
+    try:
+        if prov == "agnes":
+            import openai
+            cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=2000,
+                  messages=[{"role":"system","content":sys_},
+                            {"role":"user","content":user}])
+            txt = r.choices[0].message.content or ""
+        else:
+            import anthropic
+            cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+            r = cli.messages.create(model=AI_MODEL, max_tokens=2000, system=sys_,
+                  messages=[{"role":"user","content":user}])
+            txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+        ptxt = txt.strip().lstrip("`").rstrip("`")
+        p = json.loads(ptxt[ptxt.find("{"):ptxt.rfind("}")+1])
+        return {k: p[k] for k in ("口播","字幕分段","分镜") if k in p}
+    except Exception:
+        return None
 
 # ── 素材库:Pexels/Pixabay,无 key 退回霓虹网格 ───────────────────────────────
 
@@ -259,26 +326,31 @@ from mcp.server.mcpserver import MCPServer
 mcp = MCPServer("shortvideo", instructions="用AI讲古 · 零成本短视频生成工具链")
 
 @mcp.tool()
-def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理性硬核") -> dict:
+def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理性硬核",
+                 force: bool = False) -> dict:
     """
-    生成短视频完整脚本(口播/分镜/字幕/标题/封面文案),写入 scripts/ 目录。
-    参数: topic=主题关键词, column=栏目名(主栏目/流量款/话题款), tone=语调
+    生成短视频完整脚本(六段式深度:钩子/冲突/古语/案例/金句/行动),写入 scripts/ 目录。
+    参数: topic=主题关键词, column=栏目名, tone=语调,
+          force=若同 id 已存在, 是否强制用新脚本覆盖(重做存量时设 True)
     返回: {id, path, 口播字数, 分镜数, 字幕段数}
     """
     import re
     safe_id = re.sub(r"[^a-z0-9一-鿿]+","_", topic.strip()) or "untitled"
     path = os.path.join(SCRIPTS_DIR, f"{safe_id}.json")
-    if os.path.exists(path):
-        return {"ok": False, "msg": f"已存在: {path}, 请先备份或删除", "id": safe_id}
+    existed = os.path.exists(path)
+    if existed and not force:
+        return {"ok": False, "msg": f"已存在: {path}, 用 force=True 覆盖重做, 或换主题", "id": safe_id}
     data = _gen_script(topic, column, tone)
     data["id"] = safe_id
     json.dump(data, open(path,"w"), ensure_ascii=False, indent=2)
     eng = data.get("_engine", "")
     return {"ok": True, "id": safe_id, "path": path,
+            "overwritten": existed,
             "engine": eng or "unknown",
             "ai_error": data.get("_ai_error"),
-            "msg": ("已用 AGNES 生成完整脚本" if eng.startswith("agnes")
-                    else f"AGNES 未生效({data.get('_ai_error','key 未配置')}),已生成离线骨架,请覆写口播/分镜"),
+            "口播字数": len(data.get("口播","")), "分镜数": len(data.get("分镜",[])),
+            "msg": ("已用 AGNES 生成深度脚本" if eng.startswith("agnes")
+                    else f"AGNES 未生效({data.get('_ai_error','key 未配置')}),已生成六段式离线骨架"),
             "compose_hint": f"调用 compose_video('{safe_id}') 出成片"}
 
 @mcp.tool()
@@ -324,6 +396,12 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
     scale = 1.0 if dur_audio <= total else dur_audio / total
+    # 60-90s 目标: 音频/画面总长不足 60s 时, 给最后一镜补拍, 让成片达标
+    #   per_dur 存的是"未缩放"时长, 渲染时统一 ×scale, 所以补量要换算到未缩放空间
+    TARGET_FLOOR = float(os.environ.get("SV_MIN_DUR", "60"))
+    if scale * total < TARGET_FLOOR:
+        extra_scaled = TARGET_FLOOR - scale * total      # 还差多少秒
+        per_dur[-1] = per_dur[-1] + extra_scaled / scale # 补回未缩放镜长
     # 素材: 有 Pexels key 就拉真实图片做 Ken Burns B-roll, 没有退回霓虹网格
     imgs = _fetch_images(data.get("免费素材关键词", []), workdir)
     vids = []
@@ -356,15 +434,53 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         f"OutlineColour=&H000a0e1a,Outline=2,MarginV=90,Alignment=2',"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
-        "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",out_mp4
+        # 不用 -shortest: 画面补拍尾镜存活(60s 达标), 音频自然收尾, 尾拍留白
+        "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac",
+        "-t", f"{total*scale:.1f}",
+        out_mp4
     ], timeout=300)
     # 封面
     cover = os.path.join(OUTPUT_DIR, f"{script_id}_cover.png")
     _run(["ffmpeg","-y","-ss",str(total*0.35),"-i",out_mp4,"-frames:v","1",cover], timeout=60)
     sz = os.path.getsize(out_mp4) / 1024 / 1024
+    # 成片真实时长(含补拍尾镜), 而非仅音频时长
+    dur_video = float(subprocess.check_output(
+        ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",out_mp4],
+        text=True).strip())
     return {"ok": True, "mp4": out_mp4, "cover": cover,
-            "duration_s": round(dur_audio,1), "size_mb": round(sz,1),
+            "duration_s": round(dur_video,1), "audio_s": round(dur_audio,1),
+            "size_mb": round(sz,1),
             "visual": "free-B-roll" if _assets_used else "neon-grid(fallback, 配 PEXELS/PIXABAY key 后自动升级)"}
+
+@mcp.tool()
+def polish_script(script_id: str) -> dict:
+    """
+    雕琢已有脚本的文案:把口播重写为六段式(钩子→冲突→古语→案例→金句→行动),
+    去套话、加张力、留人,同步刷新字幕分段与分镜画面。古语/出处保持不变。
+    需要 AGNES/Anthropic key; 无 key 时返回离线提示(不硬改)。
+    返回: {脚本路径, 旧字数, 新字数, 新分镜数, 引擎, 新口播}
+    """
+    spath = os.path.join(SCRIPTS_DIR, f"{script_id}.json")
+    if not os.path.exists(spath):
+        return {"ok": False, "msg": f"找不到脚本: {spath}"}
+    data = json.load(open(spath))
+    old = data.get("口播", "")
+    polished = _polish_ai(data)
+    if not polished:
+        return {"ok": False,
+                "msg": f"雕琢需 AI 大脑(当前 key 未配置或调用失败, 原因: {data.get('_ai_error','无key')})。"
+                       f"可人工改 scripts/{script_id}.json 的 口播/字幕分段/分镜, 再 compose_video。",
+                "旧口播": old}
+    data.update(polished)
+    data["_polished"] = True
+    data["_polish_engine"] = f"{_provider()}/{AI_MODEL}"
+    json.dump(data, open(spath, "w"), ensure_ascii=False, indent=2)
+    return {"ok": True, "path": spath, "id": script_id,
+            "旧字数": len(old), "新字数": len(data.get("口播","")),
+            "新分镜数": len(data.get("分镜",[])),
+            "引擎": data.get("_polish_engine"),
+            "新口播": data.get("口播",""),
+            "下一步": f"compose_video('{script_id}') 重出成片"}
 
 @mcp.tool()
 def prepare_publish(ids, platform: str = "抖音", schedule: str = "今天 18:00") -> dict:
