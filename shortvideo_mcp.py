@@ -209,8 +209,8 @@ def _polish_ai(data):
             "请只输出一版雕琢后的 JSON(无代码块),字段: "
             "口播/字幕分段/分镜[{画面,时长}]。\n"
             "要求:①保留原古语与出处不改;②把口播写成六段式(钩子→冲突→古语→案例→金句→行动),"
-            "200-320字、短句有张力、去套话、每句都在'留人';③金句要能被截图转发;"
-            "④分镜 10-14 个对齐六段,每镜4-7s;⑤字幕逐句贴合、每句≤14字。")
+            "280-420字(宁多勿短, 深度优先, 对标60-90s成片)、短句有张力、去套话、每句都在'留人';"
+            "③金句要能被截图转发;④分镜 12-16 个对齐六段,每镜5-7s;⑤字幕逐句贴合、每句≤14字。")
     sys_ = _SYS + "\n【本次任务】只在给定的古语/出处/案例/金句基础上雕琢口播表达,不新造古语。"
     try:
         if prov == "agnes":
@@ -228,9 +228,12 @@ def _polish_ai(data):
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
         ptxt = txt.strip().lstrip("`").rstrip("`")
         p = json.loads(ptxt[ptxt.find("{"):ptxt.rfind("}")+1])
-        return {k: p[k] for k in ("口播","字幕分段","分镜") if k in p}
-    except Exception:
-        return None
+        got = {k: p[k] for k in ("口播","字幕分段","分镜") if k in p}
+        if "口播" not in got:
+            raise ValueError(f"AGNES 返回缺 口播 字段: keys={list(p.keys())[:8]}")
+        return got
+    except Exception as e:
+        return {"_error": f"{type(e).__name__}: {str(e)[:160]}"}
 
 # ── 素材库:Pexels/Pixabay,无 key 退回霓虹网格 ───────────────────────────────
 
@@ -466,10 +469,10 @@ def polish_script(script_id: str) -> dict:
     data = json.load(open(spath))
     old = data.get("口播", "")
     polished = _polish_ai(data)
-    if not polished:
-        return {"ok": False,
-                "msg": f"雕琢需 AI 大脑(当前 key 未配置或调用失败, 原因: {data.get('_ai_error','无key')})。"
-                       f"可人工改 scripts/{script_id}.json 的 口播/字幕分段/分镜, 再 compose_video。",
+    if not polished or (isinstance(polished, dict) and "_error" in polished):
+        err = polished.get("_error") if isinstance(polished, dict) else "key 未配置"
+        return {"ok": False, "engine_error": err,
+                "msg": f"雕琢未生效({err})。可人工改 scripts/{script_id}.json 的 口播/字幕分段/分镜, 再 compose_video。",
                 "旧口播": old}
     data.update(polished)
     data["_polished"] = True
