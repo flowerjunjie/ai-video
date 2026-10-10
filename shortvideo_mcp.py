@@ -71,6 +71,43 @@ def _build_srt(segments, per_dur, out):
     open(out,"w").write("\n".join(lines))
     return out
 
+def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
+    """双行字幕: 顶部章节小字幕(古语/论点) + 底部口播逐句。
+    segments=底部逐句, chapters=[(起始秒, 文案)] 顶部论点切换点。
+    用 ASS 而非 srt, 因为只有 ASS 能同时烧两行且样式独立。"""
+    def a_t(sec):
+        h=int(sec//3600); m=int((sec%3600)//60); s=sec%3600
+        return f"{h}:{m:02d}:{s:05.2f}"
+    script = [
+        "[Script Info]",
+        f"Title: 用AI讲古", "ScriptType: v4.00.000",
+        "PlayResX: 1080", "PlayResY: 1920",
+        "WrapStyle: 0", "ScaledBorderAndShadows: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: 底部,{font},42,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,120,1",
+        f"Style: 顶部,{font},26,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,150,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    # 顶部章节行(论点切换)
+    for (start, txt) in chapters:
+        end = next((s for s, _ in chapters if s > start), total)
+        script.append(f"Dialogue: 0,{a_t(start)},{a_t(end)},顶部,,0,0,0,,{txt}")
+    # 底部逐句行(对齐 segments 时间轴)
+    t = 0.0
+    seg_durs = [total/len(segments)]*len(segments) if segments else []
+    for i, seg in enumerate(segments):
+        d = seg_durs[i]
+        script.append(f"Dialogue: 1,{a_t(t)},{a_t(t+d)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
+        t += d
+    open(out, "w").write("\n".join(script))
+    return out
+
 def _render_scene(dur, workdir, idx):
     p = os.path.join(workdir, f"scene_{idx}.mp4")
     filt = (
@@ -102,11 +139,32 @@ _SYS = (
     "  ④案例/场景:落到一个具体的当代场景(刷手机/加班/低谷/AI对话),让古语'活'起来;\n"
     "  ⑤金句:一句可被截图转发、能扎心的话,全片记忆点;\n"
     "  ⑥行动:给一个可立即做的小事,不画饼、不给'听完就变'的假承诺。\n"
-    "\n【规格】口播 280-420 字(边写边默读:按 3.5 字/秒约 80-120s, 平台裁到 60-90s;"
-    "宁多勿短, 深度优先)。分镜 12-16 个、每个 5-7s;每段字幕≤14字、贴合口播节奏;不要套话,每个字都为'留人'服务。\n"
     "\n【人设口吻】短句、留白、敢下判断;多用'你看/你有没有想过/其实';"
-    "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。"
+    "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。\n"
 )
+
+# 时长档位: 决定口播字数预算 + 分镜数 + 论点层数(多论点纵深, 避免拉长变注水)
+#   word: 目标口播字数, scenes: 分镜数, args: 几层"古语×案例"论证
+_DUR_TIER = {
+    "60-90s":  dict(words=(280,420),  scenes=(12,16), args=2,
+                    label="单论点深挖(钩子-冲突-古语-案例-金句-行动)"),
+    "3min":    dict(words=(650,820),  scenes=(20,28), args=3,
+                    label="多论点纵深: 主古语+1-2个交叉论证古语, 各配当代案例, 层层推进不重复"),
+    "5min":    dict(words=(1000,1300),scenes=(30,42), args=3,
+                    label="长纵深: 主古语+2-3个交叉古语+当代场景推演+反思升华, 完整弧线, 每层换新角度"),
+}
+
+def _spec_for(duration: str):
+    """按时长档生成规格说明, 拼进 AGNES prompt, 让大脑按目标深度写(非注水)。"""
+    t = _DUR_TIER.get(duration)
+    if not t:
+        return ""
+    return ("\n【本次规格·目标时长 %s】口播 %d-%d 字、分镜 %d-%d 个(每镜 5-7s)、"
+            "要点数 %d 层。结构: %s。"
+            "每层必须换新古语/新案例, 不许换汤不换药; 字幕分段逐句贴合、每句≤14字; "
+            "顶部章节小字幕(古语/论点)标出 %s 个论点。"
+            % (duration, t["words"][0], t["words"][1], t["scenes"][0], t["scenes"][1],
+               t["args"], t["label"], t["args"]))
 
 def _provider():
     """auto: 有 AGNES_API_KEY 走 agnes(openai端点), 否则 anthropic。"""
@@ -115,29 +173,35 @@ def _provider():
             return "agnes"
     return "anthropic"
 
-def _gen_script_ai(topic, column, tone):
+def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
     """调用 AGNES(OpenAI 兼容,默认)或 Anthropic 生成完整脚本 dict。无 key 返回 None。"""
     if not AI_KEY:
         return None
+    spec = _spec_for(duration)
+    args_n = _DUR_TIER.get(duration, _DUR_TIER["60-90s"])["args"]
+    fields = ("钩子/冲突/古语/古语出处/当代案例/金句/行动指引/口播/字幕分段"
+              "/分镜[{画面,时长}]/标题候选[3]/封面文案/引文校验/免费素材关键词[4]")
+    if args_n >= 2:
+        fields += f"/章节字幕[{args_n}](每个论点一句顶部小字幕,含古语关键词)"
     user = (f"主题: {topic}\n栏目: {column}\n语调: {tone}\n"
-            "请只输出 JSON(无 markdown 代码块),字段:\n"
-            "钩子/冲突/古语/古语出处/当代案例/金句/行动指引/口播/字幕分段/分镜[{画面,时长}]"
-            "/标题候选[3]/封面文案/引文校验/免费素材关键词[4]。\n"
-            "口播必须把 钩子→冲突→古语→案例→金句→行动 六段串成一条完整叙事(200-320字),"
-            "不是要点罗列;分镜 10-14 个对齐六段叙事;字幕分段逐句贴合口播、每句≤14字。")
+            f"目标时长档位: {duration}\n"
+            f"请只输出 JSON(无 markdown 代码块),字段:\n{fields}。\n"
+            "口播必须是一条完整叙事(非要点罗列), 按目标字数写足;"
+            "分镜对齐叙事逐镜推进; 字幕分段逐句贴合口播、每句≤14字。" + spec)
     prov = _provider()
+    mtok = 6000 if duration == "5min" else (4000 if duration == "3min" else 2500)
     try:
         if prov == "agnes":
             import openai
             cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
-            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=2500,
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=mtok,
                   messages=[{"role":"system","content":_SYS},
                             {"role":"user","content":user}])
             txt = r.choices[0].message.content or ""
         else:
             import anthropic
             cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
-            r = cli.messages.create(model=AI_MODEL, max_tokens=2500, system=_SYS,
+            r = cli.messages.create(model=AI_MODEL, max_tokens=mtok, system=_SYS,
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
         txt = txt.strip().lstrip("`").rstrip("`")
@@ -185,15 +249,17 @@ def _gen_script_offline(topic, column, tone):
         "_engine": "offline-fallback(v2-六段式)",
     }
 
-def _gen_script(topic, column, tone):
-    ai = _gen_script_ai(topic, column, tone)
+def _gen_script(topic, column, tone, duration: str = "60-90s"):
+    ai = _gen_script_ai(topic, column, tone, duration)
     if ai and "_error" not in ai:
         ai["_engine"] = f"{_provider()}/{AI_MODEL}"
+        ai["目标时长"] = duration
         return ai
     reason = (ai or {}).get("_error", "key 未配置")
     off = _gen_script_offline(topic, column, tone)
     off["_engine"] = "offline-fallback"
     off["_ai_error"] = reason
+    off["目标时长"] = duration
     return off
 
 def _polish_ai(data):
@@ -271,13 +337,13 @@ def _fetch_images(keywords, workdir):
             continue
     return got
 
-def _image_to_kenburns(img, dur, out):
-    """图片 + 缓慢缩放平移(Ken Burns)→ 9:16 视频, 真实画面质感"""
+def _image_to_kenburns(img, dur, out, timeout=300):
+    """图片 + 缓慢缩放平移(Ken Burns)→ 9:16 视频, 真实画面质感。单镜≤8s, 超长由调用方切段。"""
     _run(["ffmpeg","-y","-loop","1","-i",img,"-t",str(dur),
           "-vf","scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
                "zoompan=z='1.05+0.04*in':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-               f"d={int(dur*30)}:s=1080x1920:fps=30,format=yuv420p",
-          "-c:v","libx264","-pix_fmt","yuv420p","-r","30","-an", out], timeout=120)
+               f"d={max(1,int(dur*30))}:s=1080x1920:fps=30,format=yuv420p",
+          "-c:v","libx264","-pix_fmt","yuv420p","-r","30","-an", out], timeout=timeout)
     return out
 
 # ── 合规 + 回流选题 ───────────────────────────────────────────────────────────
@@ -330,20 +396,23 @@ mcp = MCPServer("shortvideo", instructions="用AI讲古 · 零成本短视频生
 
 @mcp.tool()
 def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理性硬核",
-                 force: bool = False) -> dict:
+                 force: bool = False, duration: str = "60-90s") -> dict:
     """
     生成短视频完整脚本(六段式深度:钩子/冲突/古语/案例/金句/行动),写入 scripts/ 目录。
     参数: topic=主题关键词, column=栏目名, tone=语调,
-          force=若同 id 已存在, 是否强制用新脚本覆盖(重做存量时设 True)
-    返回: {id, path, 口播字数, 分镜数, 字幕段数}
+          force=若同 id 已存在, 是否强制用新脚本覆盖(重做存量时设 True),
+          duration=时长档位: "60-90s"(单论点)/ "3min"(多论点,~700字)/ "5min"(长纵深,~1100字)
+    返回: {id, path, 口播字数, 分镜数, 字幕段数, 目标时长}
     """
     import re
+    if duration not in _DUR_TIER:
+        duration = "60-90s"
     safe_id = re.sub(r"[^a-z0-9一-鿿]+","_", topic.strip()) or "untitled"
     path = os.path.join(SCRIPTS_DIR, f"{safe_id}.json")
     existed = os.path.exists(path)
     if existed and not force:
         return {"ok": False, "msg": f"已存在: {path}, 用 force=True 覆盖重做, 或换主题", "id": safe_id}
-    data = _gen_script(topic, column, tone)
+    data = _gen_script(topic, column, tone, duration)
     data["id"] = safe_id
     json.dump(data, open(path,"w"), ensure_ascii=False, indent=2)
     eng = data.get("_engine", "")
@@ -352,6 +421,7 @@ def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理
             "engine": eng or "unknown",
             "ai_error": data.get("_ai_error"),
             "口播字数": len(data.get("口播","")), "分镜数": len(data.get("分镜",[])),
+            "目标时长": duration,
             "msg": ("已用 AGNES 生成深度脚本" if eng.startswith("agnes")
                     else f"AGNES 未生效({data.get('_ai_error','key 未配置')}),已生成六段式离线骨架"),
             "compose_hint": f"调用 compose_video('{safe_id}') 出成片"}
@@ -399,47 +469,76 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
     scale = 1.0 if dur_audio <= total else dur_audio / total
-    # 60-90s 目标: 音频/画面总长不足 60s 时, 给最后一镜补拍, 让成片达标
-    #   per_dur 存的是"未缩放"时长, 渲染时统一 ×scale, 所以补量要换算到未缩放空间
-    TARGET_FLOOR = float(os.environ.get("SV_MIN_DUR", "60"))
+    # 目标时长地板: 按时长档位定(60-90s档=60s, 3min档=150s, 5min档=270s), 不足则补拍尾镜
+    _FLOOR = {"60-90s": 60, "3min": 150, "5min": 270}
+    TARGET_FLOOR = float(os.environ.get("SV_MIN_DUR", str(_FLOOR.get(data.get("目标时长","60-90s"), 60))))
     if scale * total < TARGET_FLOOR:
         extra_scaled = TARGET_FLOOR - scale * total      # 还差多少秒
         per_dur[-1] = per_dur[-1] + extra_scaled / scale # 补回未缩放镜长
     # 素材: 有 Pexels key 就拉真实图片做 Ken Burns B-roll, 没有退回霓虹网格
     imgs = _fetch_images(data.get("免费素材关键词", []), workdir)
     vids = []
+    MAX_CLIP = 8.0  # 单镜画面≤8s, 超长按同素材切段, 避免长镜 KenBurns 超时
+    ci = 0
     for i, d in enumerate(per_dur):
-        if imgs:
-            kw, ip = imgs[i % len(imgs)]
-            target = d * scale
-            _image_to_kenburns(ip, target, os.path.join(workdir, f"scene_{i}.mp4"))
-            vids.append(os.path.join(workdir, f"scene_{i}.mp4"))
+        target = d * scale
+        if target > MAX_CLIP + 1e-6:
+            # 切成多段 ≤8s, 同素材错序循环, 保证画面不重复呆板
+            n = int(max(1, round(target / MAX_CLIP)))
+            seg = target / n
+            for k in range(n):
+                if imgs:
+                    kw, ip = imgs[(i*3 + k) % len(imgs)]
+                    _image_to_kenburns(ip, seg, os.path.join(workdir, f"scene_{ci}.mp4"))
+                else:
+                    _render_scene(seg, workdir, ci)
+                vids.append(os.path.join(workdir, f"scene_{ci}.mp4"))
+                ci += 1
         else:
-            vids.append(_render_scene(d*scale, workdir, i))
+            if imgs:
+                kw, ip = imgs[i % len(imgs)]
+                _image_to_kenburns(ip, target, os.path.join(workdir, f"scene_{ci}.mp4"))
+            else:
+                _render_scene(target, workdir, ci)
+            vids.append(os.path.join(workdir, f"scene_{ci}.mp4"))
+            ci += 1
     _assets_used = bool(imgs)
     # 拼接
     listp = os.path.join(workdir,"list.txt")
     open(listp,"w").write("\n".join(f"file '{v}'" for v in vids))
     body = os.path.join(workdir,"body.mp4")
     _run(["ffmpeg","-y","-f","concat","-safe","0","-i",listp,"-c","copy",body], timeout=120)
-    # 字幕
-    srt = os.path.join(workdir,"sub.srt")
-    # 从分镜或字幕分段生成
+    # 字幕: 有"章节字幕"(多论点)走双行 ASS(顶部古语章节 + 底部口播), 否则单行 srt
+    chapters = data.get("章节字幕") or []
     srt_segs = data.get("字幕分段") or [f"[镜{sc.get('画面','')[:20]}]" for sc in scenes]
     srt_durs = [d*scale for d in per_dur]
-    _build_srt(srt_segs, srt_durs, srt)
-    srt_esc = srt.replace(":","\\:")
+    real_total = total * scale
+    sub_opts = ""
+    if chapters:
+        # 章节按等分对齐到论点切换时刻
+        ch_n = len(chapters)
+        step = real_total / ch_n
+        chapters_aligned = [(round(i*step,1), textwrap.shorten(c,14)) for i,c in enumerate(chapters)]
+        ass = os.path.join(workdir,"sub.ass")
+        _build_ass(srt_segs, chapters_aligned, real_total, ass)
+        sub_opts = "ass=" + ass.replace(":","\\:")
+    else:
+        srt = os.path.join(workdir,"sub.srt")
+        _build_srt(srt_segs, srt_durs, srt)
+        srt_esc = srt.replace(":","\\:")
+        sub_opts = ("subtitles=" + srt_esc + ":"
+                    f"fontsdir={FONT}:force_style="
+                    "'FontName=Droid Sans Fallback,FontSize=15,FontColour=&H00FFFFFF,"
+                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=90,Alignment=2'")
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
     _run([
         "ffmpeg","-y","-i",body,"-i",mp3,"-vf",
-        f"subtitles={srt_esc}:fontsdir={FONT}:force_style="
-        f"'FontName=Droid Sans Fallback,FontSize=15,FontColour=&H00FFFFFF,"
-        f"OutlineColour=&H000a0e1a,Outline=2,MarginV=90,Alignment=2',"
+        f"{sub_opts},"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
-        # 不用 -shortest: 画面补拍尾镜存活(60s 达标), 音频自然收尾, 尾拍留白
+        # 不用 -shortest: 画面补拍尾镜存活, 音频自然收尾, 尾拍留白
         "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac",
-        "-t", f"{total*scale:.1f}",
+        "-t", f"{real_total:.1f}",
         out_mp4
     ], timeout=300)
     # 封面
