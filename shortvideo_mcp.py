@@ -469,9 +469,16 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
     scale = 1.0 if dur_audio <= total else dur_audio / total
-    # 目标时长地板: 按时长档位定(60-90s档=60s, 3min档=150s, 5min档=270s), 不足则补拍尾镜
-    _FLOOR = {"60-90s": 60, "3min": 150, "5min": 270}
-    TARGET_FLOOR = float(os.environ.get("SV_MIN_DUR", str(_FLOOR.get(data.get("目标时长","60-90s"), 60))))
+    # 目标时长地板: 3min/5min 档强推下限(150/270s, 不足补拍尾镜保证纵深);
+    # 60-90s 短脚本档地板取配音实际时长(不足不强推60s, 避免尾部静默过冲)
+    _TIER = data.get("目标时长", "60-90s")
+    _FLOOR = {"3min": 150, "5min": 270}
+    if os.environ.get("SV_MIN_DUR"):
+        TARGET_FLOOR = float(os.environ["SV_MIN_DUR"])
+    elif _TIER in _FLOOR:
+        TARGET_FLOOR = _FLOOR[_TIER]
+    else:
+        TARGET_FLOOR = dur_audio  # 短脚本档: 跟配音走, 画面=配音时长, 无静默
     if scale * total < TARGET_FLOOR:
         extra_scaled = TARGET_FLOOR - scale * total      # 还差多少秒
         per_dur[-1] = per_dur[-1] + extra_scaled / scale # 补回未缩放镜长
