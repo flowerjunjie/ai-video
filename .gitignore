@@ -7,11 +7,14 @@
 assets/
 output/*
 !output/.gitkeep
+# 3/5min 深度标杆成片(供验质感)
+!output/王阳明龙场悟道.mp4
+!output/庄子逍遥游.mp4
+!output/庄子逍遥游_理性视角.mp4
 publish/*
 !publish/.gitkeep
 metrics/*
 !metrics/.gitkeep
-scripts/王阳明事上磨练.json
 
 # 字体/大文件
 fonts/
