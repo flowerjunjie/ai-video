@@ -33,7 +33,9 @@ os.makedirs(PUBLISH_DIR, exist_ok=True)
 os.makedirs(METRICS_DIR, exist_ok=True)
 
 FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
-VOICE = "zh-CN-YunyangNeural"  # 男声·专业·可靠
+# 默认换掉"新闻腔"YunyangNeural → YunjianNeural(激情·通透, 理性硬核不喊口号)。
+# 换声: 设 SV_VOICE=zh-CN-YunxiNeural / zh-CN-YunjianNeural / zh-CN-XiaoxiaoNeural, 或 compose 时传 voice 参。
+VOICE = os.environ.get("SV_VOICE", "zh-CN-YunjianNeural")  # 男声·激情·通透(默认, 比新闻腔生动)
 
 # 大脑(AGNES OpenAI 兼容端点, 默认; Anthropic 兼容端点作 fallback)—— 运行时注入
 #   AGNES_API_KEY / ANTHROPIC_API_KEY   : 凭证
@@ -76,7 +78,8 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
     segments=底部逐句, chapters=[(起始秒, 文案)] 顶部论点切换点。
     用 ASS 而非 srt, 因为只有 ASS 能同时烧两行且样式独立。"""
     def a_t(sec):
-        h=int(sec//3600); m=int((sec%3600)//60); s=sec%3600
+        # 标准 ASS H:MM:SS.CC — 秒与毫秒各自取模, 绝不让秒溢出 59.99
+        h=int(sec//3600); m=int((sec%3600)//60); s=sec%60
         return f"{h}:{m:02d}:{s:05.2f}"
     script = [
         "[Script Info]",
@@ -88,8 +91,8 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: 底部,{font},42,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,120,1",
-        f"Style: 顶部,{font},26,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,150,1",
+        f"Style: 底部,{font},56,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,150,1",
+        f"Style: 顶部,{font},40,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,60,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -303,16 +306,72 @@ def _polish_ai(data):
 
 # ── 素材库:Pexels/Pixabay,无 key 退回霓虹网格 ───────────────────────────────
 
+# 中文素材关键词 → 独立英文 Pexels 检索词映射(保证每镜 B-roll 画面不同)。
+# Pexels 检索词必须是英文; 直接扔中文会 0 命中。同一主题词组映射到不同画面,
+# 避免所有分镜塌成一张 "zen meditation" 呆板图。未命中映射的中文词退回一个
+# 多样化英文词池, 仍保证多镜多样。
+_ZH2EN = {
+    "王阳明": "Wang Yangming statue contemplation",
+    "阳明": "Wang Yangming statue contemplation",
+    "王阳明雕像": "stone statue ancient scholar",
+    "雕像": "stone statue ancient philosopher",
+    "龙场": "misty mountain forest",
+    "山": "misty mountain forest",
+    "办公室": "empty office desk night",
+    "办公室深夜加班": "person working office late night",
+    "加班": "person working office late night",
+    "深夜": "city street night neon",
+    "大脑": "human brain anatomy",
+    "大脑解剖图": "human brain anatomy diagram",
+    "大脑解剖": "human brain anatomy diagram",
+    "雨夜": "rainy street night neon",
+    "雨夜街头": "rainy street night neon",
+    "雨": "rainy street night neon",
+    "街头": "city street night",
+    "禅": "zen meditation",
+    "冥想": "zen meditation calm",
+    "冥想打坐": "meditation silhouette calm",
+    "打坐": "meditation silhouette calm",
+    "庄子": "ancient Chinese philosophy scroll",
+    "逍遥游": "ancient Chinese philosophy scroll",
+    "鱼": "koi fish pond zen",
+    "蝴蝶": "butterfly closeup",
+    "河": "calm river forest",
+    "道": "ink calligraphy landscape",
+    "水": "flowing water calm",
+    "山间": "misty mountain forest",
+    "竹林": "bamboo forest mist",
+}
+# 兜底多样化英文词池(映射未命中时按序取, 仍不同画面)
+_FALLBACK_EN = [
+    "ancient chinese philosophy", "zen meditation calm",
+    "misty mountain forest", "ink calligraphy landscape",
+    "human brain concept", "person working late night office",
+]
+
 def _fetch_images(keywords, workdir):
     """按关键词拉 Pexels 免费图片(curl 实现, 避免 urllib 代理问题)。
+    每个关键词独立映射到英文检索词, 保证多镜画面不重复; 未命中走兜底池。
     返回 [(关键词, 图片路径), ...]; 无 key 或拉取失败返回 []。"""
     if not PEXELS_KEY:
         return []
     import shlex, urllib.parse
     got = []
+    seen_en = set()   # 去重: 已用过的英文检索词不再重复, 逼画面多样化
+    fb_i = 0
     for i, kw in enumerate(keywords[:6]):
         try:
-            q = kw if kw.isascii() else "zen meditation"
+            q = _ZH2EN.get(str(kw).strip(), "").strip()
+            if not q:
+                # 中文未映射 → 兜底池下一个词; 仍去重避免同图
+                while fb_i < len(_FALLBACK_EN) and _FALLBACK_EN[fb_i] in seen_en:
+                    fb_i += 1
+                q = _FALLBACK_EN[fb_i % len(_FALLBACK_EN)] if fb_i < len(_FALLBACK_EN) else f"philosophy calm {i}"
+                fb_i += 1
+            elif q in seen_en:
+                # 映射命中但英文词已用过 → 直接跳过, 别重复同图
+                continue
+            seen_en.add(q)
             qenc = urllib.parse.quote(q)
             api = ["curl", "-s", "--max-time", "20",
                   f"https://api.pexels.com/v1/search?query={qenc}&per_page=1",
@@ -429,13 +488,13 @@ def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理
 @mcp.tool()
 def tts_voice(text: str, out: str = "", voice: str = VOICE) -> dict:
     """
-    edge-tts 免费配音。voice 可选值:
-      zh-CN-YunyangNeural (男声·专业·可靠, 默认)
-      zh-CN-YunjianNeural (男声·激情)
-      zh-CN-YunxiNeural   (男声·阳光)
+    edge-tts 免费配音。voice 可选值(默认 zh-CN-YunjianNeural, 激情通透, 比新闻腔生动):
+      zh-CN-YunjianNeural (男声·激情, 默认/最生动)
+      zh-CN-YunxiNeural   (男声·阳光·从容)
+      zh-CN-YunyangNeural (男声·专业·可靠, 偏新闻腔)
       zh-CN-XiaoxiaoNeural(女声·温暖)
       zh-CN-YunxiaNeural  (男声·可爱/卡通)
-    返回: {mp3路径, 字节数}
+    返回: {mp3路径, 字节数, voice}
     """
     out = out or os.path.join(tempfile.gettempdir(), f"sv_tts_{os.getpid()}.mp3")
     _tts(text, out, voice)
@@ -535,8 +594,8 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         srt_esc = srt.replace(":","\\:")
         sub_opts = ("subtitles=" + srt_esc + ":"
                     f"fontsdir={FONT}:force_style="
-                    "'FontName=Droid Sans Fallback,FontSize=15,FontColour=&H00FFFFFF,"
-                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=90,Alignment=2'")
+                    "'FontName=Droid Sans Fallback,FontSize=20,FontColour=&H00FFFFFF,"
+                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=140,Alignment=2'")
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
     _run([
         "ffmpeg","-y","-i",body,"-i",mp3,"-vf",
