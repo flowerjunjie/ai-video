@@ -341,6 +341,35 @@ _ZH2EN = {
     "水": "flowing water calm",
     "山间": "misty mountain forest",
     "竹林": "bamboo forest mist",
+    "大鹏鸟": "majestic eagle flying above clouds",
+    "大鹏": "majestic eagle flying above clouds",
+    "鹏": "majestic eagle flying above clouds",
+    "大鹏鸟CG": "majestic eagle flying above clouds",
+    "办公室加班": "person working office late night",
+    "手机": "person staring phone screen dark",
+    "手机屏幕": "person staring phone screen dark",
+    "手机刷屏": "person staring phone screen dark",
+    "镜子": "mirror reflection person",
+    "镜子倒影": "mirror reflection person",
+    "倒影": "calm water reflection",
+    "古代书籍": "ancient chinese book scroll",
+    "古书": "ancient chinese book scroll",
+    "书籍": "ancient chinese book scroll",
+    "书籍特写": "ancient chinese book scroll closeup",
+    "古代书籍特写": "ancient chinese book scroll closeup",
+    "火焰": "fire particles abstract",
+    "火焰粒子": "fire particles abstract",
+    "抽象火焰": "fire particles abstract",
+    "抽象火焰粒子动画": "fire particles abstract",
+    "城市人群": "city crowd silhouette black white",
+    "城市剪影": "city crowd silhouette black white",
+    "城市人群黑白剪影": "city crowd silhouette black white",
+    "人群剪影": "crowd silhouette",
+    "自然空镜": "calm forest light sunbeams",
+    "树": "sunlight through forest trees",
+    "树的光": "sunlight through forest trees",
+    "安静自然": "calm nature stillness",
+    "安静自然空镜（树/光）": "sunlight through forest trees",
 }
 # 兜底多样化英文词池(映射未命中时按序取, 仍不同画面)
 _FALLBACK_EN = [
@@ -603,10 +632,10 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
         # 不用 -shortest: 画面补拍尾镜存活, 音频自然收尾, 尾拍留白
-        "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac",
+        "-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-c:a","aac",
         "-t", f"{real_total:.1f}",
         out_mp4
-    ], timeout=300)
+    ], timeout=900)
     # 封面
     cover = os.path.join(OUTPUT_DIR, f"{script_id}_cover.png")
     _run(["ffmpeg","-y","-ss",str(total*0.35),"-i",out_mp4,"-frames:v","1",cover], timeout=60)
