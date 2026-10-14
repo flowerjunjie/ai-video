@@ -7,7 +7,7 @@
 MCP client 配置:
   {"mcpServers": {"shortvideo": {"command": "python3", "args": ["/path/to/shortvideo_mcp.py"]}}}
 """
-import json, os, re, subprocess, sys, textwrap, asyncio, tempfile, datetime
+import json, os, re, subprocess, sys, textwrap, asyncio, tempfile, datetime, time
 from typing import Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -124,8 +124,20 @@ def _render_scene(dur, workdir, idx):
     return p
 
 def _tts(text, out_mp3, voice=VOICE):
-    _run(["edge-tts","--voice",voice,"--text",text,"--write-media",out_mp3], timeout=120)
-    return out_mp3
+    """edge-tts 免费配音。Bing 端点常对机房 IP 间歇 403 限流,
+    重试 3 次、指数退避(2/4/8s), 末次失败才抛出。"""
+    last = None
+    for i in range(3):
+        try:
+            _run(["edge-tts","--voice",voice,"--text",text,"--write-media",out_mp3], timeout=120)
+            if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 0:
+                return out_mp3
+            last = RuntimeError("edge-tts 输出空文件")
+        except Exception as e:
+            last = e
+        if i < 2:
+            time.sleep([2,4,8][i])
+    raise last or RuntimeError("edge-tts 连续 3 次失败, 可能被 Bing 限流")
 
 # ── 大脑:AGNES/Anthropic 自动生成脚本,无 key 走离线规则 fallback ──────────────
 
