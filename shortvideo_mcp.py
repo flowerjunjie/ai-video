@@ -514,6 +514,13 @@ def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理
         return {"ok": False, "msg": f"已存在: {path}, 用 force=True 覆盖重做, 或换主题", "id": safe_id}
     data = _gen_script(topic, column, tone, duration)
     data["id"] = safe_id
+    # 护栏: 清洗分镜时长 — AGNES 偶尔返回 "5s"/"3.5s" 等字符串, 强制转 float
+    for sc in data.get("分镜", []):
+        v = sc.get("时长", 3)
+        try:
+            sc["时长"] = float(str(v).rstrip("s").strip() or 3)
+        except (ValueError, TypeError):
+            sc["时长"] = 3.0
     json.dump(data, open(path,"w"), ensure_ascii=False, indent=2)
     eng = data.get("_engine", "")
     return {"ok": True, "id": safe_id, "path": path,
