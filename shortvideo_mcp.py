@@ -91,8 +91,10 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: 底部,{font},56,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,150,1",
-        f"Style: 顶部,{font},40,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,60,1",
+        # 底部逐句: 字号44, MarginV(距底)120px; 顶部章节: 字号30, 距顶80px
+        # 两行垂直净距 ≥ 120-44-30-80 = 66px, 竖屏1920高下不重叠
+        f"Style: 底部,{font},44,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,120,1",
+        f"Style: 顶部,{font},30,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,80,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -161,8 +163,8 @@ _SYS = (
 # 时长档位: 决定口播字数预算 + 分镜数 + 论点层数(多论点纵深, 避免拉长变注水)
 #   word: 目标口播字数, scenes: 分镜数, args: 几层"古语×案例"论证
 _DUR_TIER = {
-    "60-90s":  dict(words=(280,420),  scenes=(12,16), args=2,
-                    label="单论点深挖(钩子-冲突-古语-案例-金句-行动)"),
+    "60-90s":  dict(words=(280,420),  scenes=(12,16), args=3,
+                    label="单主线深挖: 主古语+1个交叉古语印证+当代案例, 三层递进不平铺"),
     "3min":    dict(words=(650,820),  scenes=(20,28), args=3,
                     label="多论点纵深: 主古语+1-2个交叉论证古语, 各配当代案例, 层层推进不重复"),
     "5min":    dict(words=(1000,1300),scenes=(30,42), args=3,
@@ -194,8 +196,10 @@ def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
         return None
     spec = _spec_for(duration)
     args_n = _DUR_TIER.get(duration, _DUR_TIER["60-90s"])["args"]
+    # 关键词数量随档位递增: 短片6 / 3min8 / 5min10, 画面池化后多镜错用, 根治重复画面
+    n_kw = {"60-90s": 6, "3min": 8, "5min": 10}.get(duration, 6)
     fields = ("钩子/冲突/古语/古语出处/当代案例/金句/行动指引/口播/字幕分段"
-              "/分镜[{画面,时长}]/标题候选[3]/封面文案/引文校验/免费素材关键词[4]")
+              f"/分镜[{{画面,时长}}]/标题候选[3]/封面文案/引文校验/免费素材关键词[{n_kw}](多写,覆盖叙事每个场景)")
     if args_n >= 2:
         fields += f"/章节字幕[{args_n}](每个论点一句顶部小字幕,含古语关键词)"
     user = (f"主题: {topic}\n栏目: {column}\n语调: {tone}\n"
@@ -400,7 +404,7 @@ def _fetch_images(keywords, workdir):
     got = []
     seen_en = set()   # 去重: 已用过的英文检索词不再重复, 逼画面多样化
     fb_i = 0
-    for i, kw in enumerate(keywords[:6]):
+    for i, kw in enumerate(keywords[:8]):
         try:
             q = _ZH2EN.get(str(kw).strip(), "").strip()
             if not q:
@@ -414,25 +418,28 @@ def _fetch_images(keywords, workdir):
                 continue
             seen_en.add(q)
             qenc = urllib.parse.quote(q)
+            # per_page=4: 同关键词拉多张, 池化后多镜错用, 根治"重复画面"
             api = ["curl", "-s", "--max-time", "20",
-                  f"https://api.pexels.com/v1/search?query={qenc}&per_page=1",
+                  f"https://api.pexels.com/v1/search?query={qenc}&per_page=4",
                   "-H", f"Authorization: {PEXELS_KEY}"]
             out = subprocess.run(api, capture_output=True, text=True, timeout=25).stdout
             photos = json.loads(out).get("photos", [])
             if not photos:
                 continue
-            s = photos[0].get("src", {})
-            url = (s.get("large2x") if isinstance(s, dict) else None) or \
-                  (s.get("large") if isinstance(s, dict) else None) or \
-                  photos[0].get("url") or ""
-            if not url:
-                continue
-            p = os.path.join(workdir, f"img_{i}.jpg")
-            dl = ["curl", "-s", "-L", "--max-time", "30", "-o", p,
-                  "-H", "User-Agent: Mozilla/5.0", url]
-            subprocess.run(dl, timeout=35)
-            if os.path.getsize(p) > 1000:
-                got.append((kw, p))
+            # 每张独立下载, 命名 img_{i}_{j}.jpg, 全部入池
+            for j, ph in enumerate(photos):
+                s = ph.get("src", {})
+                url = (s.get("large2x") if isinstance(s, dict) else None) or \
+                      (s.get("large") if isinstance(s, dict) else None) or \
+                      ph.get("url") or ""
+                if not url:
+                    continue
+                p = os.path.join(workdir, f"img_{i}_{j}.jpg")
+                dl = ["curl", "-s", "-L", "--max-time", "30", "-o", p,
+                      "-H", "User-Agent: Mozilla/5.0", url]
+                subprocess.run(dl, timeout=35)
+                if os.path.getsize(p) > 1000:
+                    got.append((kw, p))
         except Exception:
             continue
     return got
