@@ -91,10 +91,10 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # 底部逐句: 字号44, MarginV(距底)120px; 顶部章节: 字号30, 距顶80px
-        # 两行垂直净距 ≥ 120-44-30-80 = 66px, 竖屏1920高下不重叠
-        f"Style: 底部,{font},44,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,120,1",
-        f"Style: 顶部,{font},30,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,80,1",
+        # 底部逐句: 字号64(竖屏够看), 距底MarginV=140; 顶部章节: 字号44(金色论点标签), 距顶MarginV=100
+        # 顶部行底缘≈100+44=144px; 底部行顶缘≈1920-140-64=1716px → 净距1572px, 零重叠
+        f"Style: 底部,{font},64,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,140,1",
+        f"Style: 顶部,{font},44,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,100,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
