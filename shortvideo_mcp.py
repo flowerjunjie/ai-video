@@ -444,6 +444,41 @@ def _fetch_images(keywords, workdir):
             continue
     return got
 
+def _xfade_concat(vids, out, fade=0.5):
+    """段间 0.5s 交叉溶解(爆款顺滑感)。段数>12 时回退硬切 concat 防重编码超时。
+    每接一段总时长减 fade, 最终片长 = Σdur - (n-1)*fade。"""
+    n = len(vids)
+    if n <= 1:
+        _run(["ffmpeg","-y","-i",vids[0],"-c","copy",out], timeout=120)
+        return
+    # 重片(>7段)全量 xfade 重编码 1080x1920 代价大且易超时 → 硬切兜底
+    if n > 7:
+        listp = out + ".list.txt"
+        open(listp,"w").write("\n".join(f"file '{v}'" for v in vids))
+        _run(["ffmpeg","-y","-f","concat","-safe","0","-i",listp,"-c","copy",out], timeout=300)
+        return
+    inputs = []
+    for v in vids:
+        inputs += ["-i", v]
+    # 逐段时长(秒), xfade offset 需累加: off_i = Σdur[0..i] - i*fade
+    durs = []
+    for v in vids:
+        durs.append(float(subprocess.check_output(
+            ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",v],
+            text=True).strip()))
+    # 链式 xfade: step1 → [v1], step2: [v1]+[2:v] → [v2], ... 中间标签 vN, 末段 → [vout]
+    parts = []
+    off = durs[0] - fade
+    parts.append(f"[0:v][1:v]xfade=transition=fade:duration={fade}:offset={off:.2f}[v1]")
+    for i in range(2, n):
+        off = off + durs[i-1] - fade
+        tail = "[vout]" if i == n-1 else f"[v{i}]"
+        parts.append(f"[v{i-1}][{i}:v]xfade=transition=fade:duration={fade}:offset={off:.2f}{tail}")
+    vf = ";".join(parts)
+    _run(["ffmpeg","-y"] + inputs + ["-filter_complex", vf,
+          "-map","[vout]","-an","-c:v","libx264","-pix_fmt","yuv420p","-r","30", out],
+         timeout=600)
+
 def _image_to_kenburns(img, dur, out, timeout=300):
     """图片 + 缓慢缩放平移(Ken Burns)→ 9:16 视频, 真实画面质感。单镜≤8s, 超长由调用方切段。"""
     _run(["ffmpeg","-y","-loop","1","-i",img,"-t",str(dur),
@@ -624,11 +659,9 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
             vids.append(os.path.join(workdir, f"scene_{ci}.mp4"))
             ci += 1
     _assets_used = bool(imgs)
-    # 拼接
-    listp = os.path.join(workdir,"list.txt")
-    open(listp,"w").write("\n".join(f"file '{v}'" for v in vids))
+    # 拼接: 段间 0.5s 交叉溶解(爆款顺滑感); 段数>12 的重片内部自动回退硬切防超时
     body = os.path.join(workdir,"body.mp4")
-    _run(["ffmpeg","-y","-f","concat","-safe","0","-i",listp,"-c","copy",body], timeout=120)
+    _xfade_concat(vids, body, fade=0.5)
     # 字幕: 有"章节字幕"(多论点)走双行 ASS(顶部古语章节 + 底部口播), 否则单行 srt
     chapters = data.get("章节字幕") or []
     srt_segs = data.get("字幕分段") or [f"[镜{sc.get('画面','')[:20]}]" for sc in scenes]
@@ -652,14 +685,30 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
                     "'FontName=Droid Sans Fallback,FontSize=20,FontColour=&H00FFFFFF,"
                     "OutlineColour=&H000a0e1a,Outline=2,MarginV=140,Alignment=2'")
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
+    # BGM 衬底: ffmpeg 纯合成双层正弦 pad(低频铺底+中频泛音), 音量 -26dB 压在配音下, 不抢人声
+    bgm = os.path.join(workdir, "bgm.wav")
+    _run(["ffmpeg","-y",
+          "-f","lavfi","-i",f"sine=frequency=66:duration={real_total:.1f}",
+          "-f","lavfi","-i",f"sine=frequency=132:duration={real_total:.1f}",
+          "-f","lavfi","-i",f"sine=frequency=198:duration={real_total:.1f}",
+          "-filter_complex",
+          "[0]volume=0.12[t0];[1]volume=0.05[t1];[2]volume=0.03[t2];"
+          "[t0][t1]amix=inputs=2:normalize=0[m1];[m1][t2]amix=inputs=2:normalize=0[m2];"
+          f"[m2]afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5,aecho=0.8:0.7:400:0.3[out]",
+          "-map","[out]","-ac","2","-ar","44100",bgm], timeout=120)
     _run([
-        "ffmpeg","-y","-i",body,"-i",mp3,"-vf",
+        "ffmpeg","-y","-i",body,"-i",mp3,"-i",bgm,"-vf",
         f"{sub_opts},"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
-        # 不用 -shortest: 画面补拍尾镜存活, 音频自然收尾, 尾拍留白
-        "-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-c:a","aac",
-        "-t", f"{real_total:.1f}",
+        # 音频: 配音(主) + BGM衬底(副) 混音, 响度规范到 -16 LUFS(短视频平台标准)
+        "-filter_complex",
+        f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[voc];"
+        f"[2:a]volume=0.5[bg];"
+        f"[voc][bg]amix=inputs=2:duration=first:normalize=0[mix];"
+        f"[mix]loudnorm=I=-16:TP=-1.5[L]",
+        "-map","0:v","-map","[L]","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",
+        "-c:a","aac","-b:a","192k","-t", f"{real_total:.1f}",
         out_mp4
     ], timeout=900)
     # 封面
