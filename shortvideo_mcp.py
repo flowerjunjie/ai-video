@@ -36,6 +36,9 @@ FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
 # 默认换掉"新闻腔"YunyangNeural → YunjianNeural(激情·通透, 理性硬核不喊口号)。
 # 换声: 设 SV_VOICE=zh-CN-YunxiNeural / zh-CN-YunjianNeural / zh-CN-XiaoxiaoNeural, 或 compose 时传 voice 参。
 VOICE = os.environ.get("SV_VOICE", "zh-CN-YunjianNeural")  # 男声·激情·通透(默认, 比新闻腔生动)
+# 去播音腔: 降速+降调造"慢热沉思"质感(有特色的声音, 非纯正播报)。全库存共享, 可用 env 覆盖。
+TTS_RATE  = os.environ.get("SV_TTS_RATE",  "-15%")   # 慢热, 留白更足
+TTS_PITCH = os.environ.get("SV_TTS_PITCH", "-10Hz")  # 低沉沉稳, 去新闻腔
 
 # 大脑(AGNES OpenAI 兼容端点, 默认; Anthropic 兼容端点作 fallback)—— 运行时注入
 #   AGNES_API_KEY / ANTHROPIC_API_KEY   : 凭证
@@ -128,13 +131,15 @@ def _render_scene(dur, workdir, idx):
          "-s","1080x1920", p], timeout=120)
     return p
 
-def _tts(text, out_mp3, voice=VOICE):
+def _tts(text, out_mp3, voice=VOICE, rate="+0%", pitch="+0Hz"):
     """edge-tts 免费配音。Bing 端点常对机房 IP 间歇 403 限流,
-    重试 3 次、指数退避(2/4/8s), 末次失败才抛出。"""
+    重试 3 次、指数退避(2/4/8s), 末次失败才抛出。
+    rate/pitch 可传 edge-tts 语调参, 默认不变; 全库存走 TTS_RATE/TTS_PITCH 环境变量。"""
     last = None
     for i in range(3):
         try:
-            _run(["edge-tts","--voice",voice,"--text",text,"--write-media",out_mp3], timeout=120)
+            _run(["edge-tts","--voice",voice,"--text",text,
+                 f"--rate={rate}",f"--pitch={pitch}","--write-media",out_mp3], timeout=120)
             if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 0:
                 return out_mp3
             last = RuntimeError("edge-tts 输出空文件")
@@ -159,6 +164,13 @@ _SYS = (
     "  ④案例/场景:落到一个具体的当代场景(刷手机/加班/低谷/AI对话),让古语'活'起来;\n"
     "  ⑤金句:一句可被截图转发、能扎心的话,全片记忆点;\n"
     "  ⑥行动:给一个可立即做的小事,不画饼、不给'听完就变'的假承诺。\n"
+    "\n【爆火卖点·硬性要求】\n"
+    "  - 反常识钩子: 开头一句必须先立一个'反直觉、扎心、颠覆常识'的判断, 逼用户 3 秒内停下来;"
+    "  用'你以为的X, 其实是Y'或'大多数人以为… 但真相是…'这类认知落差句式, 绝不平铺直叙讲道理。\n"
+    "  - 认知落差贯穿: 中段把'大众停在字面/停在情怀'的认知误区戳破, 制造'我确实被戳中了'的代入, 这是传播的前提。\n"
+    "  - 可截图金句: ⑤的金句要短狠、有节奏、能被单独截图转发当文案, 优先用对仗/反转/扎心判断句,\n"
+    "  避免'听完就变'式鸡汤; 一句话让人想@朋友。\n"
+    "  - 结尾留传播记忆点: 行动指引给一个具体到'今晚就能做'的小事, 降低执行门槛, 强化'看完就能用'。\n"
     "\n【人设口吻】短句、留白、敢下判断;多用'你看/你有没有想过/其实';"
     "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。\n"
 )
@@ -298,7 +310,9 @@ def _polish_ai(data):
             "口播/字幕分段/分镜[{画面,时长}]。\n"
             "要求:①保留原古语与出处不改;②把口播写成六段式(钩子→冲突→古语→案例→金句→行动),"
             "280-420字(宁多勿短, 深度优先, 对标60-90s成片)、短句有张力、去套话、每句都在'留人';"
-            "③金句要能被截图转发;④分镜 12-16 个对齐六段,每镜5-7s;⑤字幕逐句贴合、每句≤14字。")
+            "③【爆火卖点】开头钩子必须先立一个反常识/扎心/认知落差判断(用'你以为的X, 其实是Y'句式), 逼用户停下;"
+            "中段戳破大众认知误区制造'被戳中'代入;金句要短狠有节奏、能被截图转发当文案、让人想@朋友;"
+            "行动给一个今晚就能做的具体小事;④金句单独一行要能脱离上下文成立;⑤分镜 12-16 个对齐六段,每镜5-7s;⑥字幕逐句贴合、每句≤14字。")
     sys_ = _SYS + "\n【本次任务】只在给定的古语/出处/案例/金句基础上雕琢口播表达,不新造古语。"
     try:
         if prov == "agnes":
@@ -590,7 +604,7 @@ def tts_voice(text: str, out: str = "", voice: str = VOICE) -> dict:
     返回: {mp3路径, 字节数, voice}
     """
     out = out or os.path.join(tempfile.gettempdir(), f"sv_tts_{os.getpid()}.mp3")
-    _tts(text, out, voice)
+    _tts(text, out, voice, rate=TTS_RATE, pitch=TTS_PITCH)
     sz = os.path.getsize(out)
     return {"ok": True, "mp3": out, "bytes": sz, "voice": voice}
 
@@ -616,7 +630,7 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     total = sum(per_dur)
     # 先跑 TTS 测时长
     mp3 = os.path.join(workdir,"voice.mp3")
-    _tts(data["口播"], mp3, voice)
+    _tts(data["口播"], mp3, voice, rate=TTS_RATE, pitch=TTS_PITCH)
     dur_audio = float(subprocess.check_output(
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
