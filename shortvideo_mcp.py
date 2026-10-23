@@ -685,8 +685,8 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         srt_esc = srt.replace(":","\\:")
         sub_opts = ("subtitles=" + srt_esc + ":"
                     f"fontsdir={FONT}:force_style="
-                    "'FontName=Droid Sans Fallback,FontSize=20,FontColour=&H00FFFFFF,"
-                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=140,Alignment=2'")
+                    "'FontName=Droid Sans Fallback,FontSize=32,FontColour=&H00FFFFFF,"
+                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=160,Alignment=2'")
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
     # BGM 衬底: ffmpeg 纯合成双层正弦 pad(低频铺底+中频泛音), 音量 -26dB 压在配音下, 不抢人声
     bgm = os.path.join(workdir, "bgm.wav")
