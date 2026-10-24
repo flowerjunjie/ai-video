@@ -94,12 +94,12 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # 底部逐句: 字号52(竖屏够看且不顶满), 距底MarginV=160
-        # 顶部章节: 字号44金色标签, 加淡入淡出消除切换残影; 每段只闪现前3s后消失(降满屏密度)
-        # 顶部行底缘≈100+44=144px; 底部行顶缘≈1920-160-52=1708px → 物理净距1564px, 顶底不撞
+        # 底部逐句: 字号64(竖屏够看且不顶满), 距底MarginV=160
+        # 顶部章节: 字号54金色标签, 加淡入淡出消除切换残影; 每段只闪现前3s后消失(降满屏密度)
+        # 顶部行底缘≈100+54=154px; 底部行顶缘≈1920-160-64=1696px → 物理净距1542px, 顶底不撞
         # 你看到的"重叠"真实根因: ①章节标签全程不消失+底部逐句全程满=满屏密度 ②切换点新旧标签残影叠加
-        f"Style: 底部,{font},52,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,160,1",
-        f"Style: 顶部,{font},44,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,100,1",
+        f"Style: 底部,{font},64,&H00FFFFFF,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,100,100,0,0,1,3,1,2,40,40,160,1",
+        f"Style: 顶部,{font},54,&H00E8C860,&H00FFFFFF,&H000A0E1A,&H800A0E1A,0,0,0,0,100,100,0,0,1,2,1,8,40,40,100,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -625,8 +625,13 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     os.makedirs(workdir, exist_ok=True)
     # 若没有字幕分段, 从分镜数 × 时长推算等宽
     scenes = data["分镜"]
-    # 强制转为 float, 防止 AGNES 返回字符串导致 sum 报错
-    per_dur = [float(sc.get("时长", 3)) for sc in scenes]
+    # 强制转为 float: AGNES 偶尔把"时长"返回成 "5s"/"5 sec" 字符串, 防 compose 崩
+    def _dur_of(sc):
+        try:
+            return float(str(sc.get("时长", 3)).split()[0].rstrip("sec ").strip() or 3)
+        except (ValueError, IndexError):
+            return 3.0
+    per_dur = [_dur_of(sc) for sc in scenes]
     total = sum(per_dur)
     # 先跑 TTS 测时长
     mp3 = os.path.join(workdir,"voice.mp3")
