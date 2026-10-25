@@ -65,21 +65,27 @@ def _run(cmd, timeout=300):
         raise RuntimeError(f"cmd failed (exit {r.returncode}):\n{r.stderr[-3000:]}")
     return r
 
-def _build_srt(segments, per_dur, out):
+def _build_srt(segments, per_dur, out, cues=None):
     def ts(sec):
         h=int(sec//3600); m=int((sec%3600)//60); s=int(sec%60); ms=int((sec-int(sec))*1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-    t=0; lines=[]
-    for i,(seg,d) in enumerate(zip(segments, per_dur)):
-        lines.append(f"{i+1}\n{ts(t)} --> {ts(t+d)}\n{textwrap.shorten(seg,20)}\n")
-        t+=d
+    lines=[]
+    if cues and len(cues) == len(segments):
+        for i,(seg,(st,en)) in enumerate(zip(segments, cues)):
+            lines.append(f"{i+1}\n{ts(st)} --> {ts(en)}\n{textwrap.shorten(seg,20)}\n")
+    else:
+        t=0
+        for i,(seg,d) in enumerate(zip(segments, per_dur)):
+            lines.append(f"{i+1}\n{ts(t)} --> {ts(t+d)}\n{textwrap.shorten(seg,20)}\n")
+            t+=d
     open(out,"w").write("\n".join(lines))
     return out
 
-def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
+def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback", cues=None):
     """双行字幕: 顶部章节小字幕(古语/论点) + 底部口播逐句。
     segments=底部逐句, chapters=[(起始秒, 文案)] 顶部论点切换点。
-    用 ASS 而非 srt, 因为只有 ASS 能同时烧两行且样式独立。"""
+    cues=[(start,end)] 与 segments 同序的逐句真实起止(TTS 时间戳);
+    缺省 None 则回退等分。用 ASS 而非 srt, 因为只有 ASS 能同时烧两行且样式独立。"""
     def a_t(sec):
         # 标准 ASS H:MM:SS.CC — 秒与毫秒各自取模, 绝不让秒溢出 59.99
         h=int(sec//3600); m=int((sec%3600)//60); s=sec%60
@@ -109,13 +115,20 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback"):
         end = next((s for s, _ in chapters if s > start), total)
         flash_end = min(start + 3.0, end)  # 只闪现3s后消失
         script.append(f"Dialogue: 0,{a_t(start)},{a_t(flash_end)},顶部,,0,0,0,,{{\\fad(300,300)}}{txt}")
-    # 底部逐句行(对齐 segments 时间轴)
-    t = 0.0
-    seg_durs = [total/len(segments)]*len(segments) if segments else []
-    for i, seg in enumerate(segments):
-        d = seg_durs[i]
-        script.append(f"Dialogue: 1,{a_t(t)},{a_t(t+d)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
-        t += d
+    # 底部逐句行: 优先用 TTS 逐句真实起止(cues), 让字幕跟配音走; 缺则等分兜底
+    if cues and len(cues) == len(segments):
+        for i, seg in enumerate(segments):
+            st, en = cues[i]
+            en = min(en, total)
+            if en <= st: en = st + 0.1
+            script.append(f"Dialogue: 1,{a_t(st)},{a_t(en)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
+    else:
+        t = 0.0
+        seg_durs = [total/len(segments)]*len(segments) if segments else []
+        for i, seg in enumerate(segments):
+            d = seg_durs[i]
+            script.append(f"Dialogue: 1,{a_t(t)},{a_t(t+d)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
+            t += d
     open(out, "w").write("\n".join(script))
     return out
 
@@ -131,15 +144,19 @@ def _render_scene(dur, workdir, idx):
          "-s","1080x1920", p], timeout=120)
     return p
 
-def _tts(text, out_mp3, voice=VOICE, rate="+0%", pitch="+0Hz"):
+def _tts(text, out_mp3, voice=VOICE, rate="+0%", pitch="+0Hz", out_vtt=None):
     """edge-tts 免费配音。Bing 端点常对机房 IP 间歇 403 限流,
     重试 3 次、指数退避(2/4/8s), 末次失败才抛出。
-    rate/pitch 可传 edge-tts 语调参, 默认不变; 全库存走 TTS_RATE/TTS_PITCH 环境变量。"""
+    rate/pitch 可传 edge-tts 语调参, 默认不变; 全库存走 TTS_RATE/TTS_PITCH 环境变量。
+    out_vtt: 给路径则同时落 VTT(逐句 word-boundary 时间戳), 供字幕对齐配音真实语速。"""
     last = None
     for i in range(3):
         try:
-            _run(["edge-tts","--voice",voice,"--text",text,
-                 f"--rate={rate}",f"--pitch={pitch}","--write-media",out_mp3], timeout=120)
+            cmd = ["edge-tts","--voice",voice,"--text",text,
+                 f"--rate={rate}",f"--pitch={pitch}","--write-media",out_mp3]
+            if out_vtt:
+                cmd += ["--write-subtitles", out_vtt]
+            _run(cmd, timeout=120)
             if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 0:
                 return out_mp3
             last = RuntimeError("edge-tts 输出空文件")
@@ -148,6 +165,37 @@ def _tts(text, out_mp3, voice=VOICE, rate="+0%", pitch="+0Hz"):
         if i < 2:
             time.sleep([2,4,8][i])
     raise last or RuntimeError("edge-tts 连续 3 次失败, 可能被 Bing 限流")
+
+def _vtt_ts(s):
+    """edge-tts VTT 时间 '00:00:03,800' → 秒。"""
+    m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", s.strip())
+    if not m:
+        return float(s)
+    return int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3)) + int(m.group(4))/1000.0
+
+def _vtt_cues(segments, vtt_path, total, n_segs):
+    """逐句真实起止 [(start,end)]。
+    核心: 按每段字幕的**字数权重**把配音总时长(=total)分配给各段 →
+    每段时长按字数正比, 起点严格连续(前段 end = 后段 start), 跟配音语速走, 永不塌缩/重复。
+    VTT 词块数常 < 段数, 故不用词块对齐, 改用字数权重(字数多→段长, 与 TTS 语速正相关)。
+    若 total 未知/为 0 则按字数权重归一兜底。"""
+    n = max(n_segs, len(segments))
+    if total <= 0:
+        total = n * 3.0
+    # 每段权重 = 该段字数(空段给最小权重, 保证不 0 时长)
+    weights = [max(len(s.replace(" ","")), 1) for s in segments]
+    total_w = sum(weights)
+    t = 0.0
+    cues = []
+    for i in range(n):
+        if i < len(weights):
+            w = weights[i]
+        else:
+            w = total_w / n  # 段数超 VTT 时均摊
+        d = total * w / total_w
+        cues.append((round(t,2), round(t+d,2)))
+        t += d
+    return cues[:n_segs]
 
 # ── 大脑:AGNES/Anthropic 自动生成脚本,无 key 走离线规则 fallback ──────────────
 
@@ -633,9 +681,10 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
             return 3.0
     per_dur = [_dur_of(sc) for sc in scenes]
     total = sum(per_dur)
-    # 先跑 TTS 测时长
+    # 先跑 TTS 测时长 + 落 VTT 逐句时间戳(供字幕对齐配音真实语速)
     mp3 = os.path.join(workdir,"voice.mp3")
-    _tts(data["口播"], mp3, voice, rate=TTS_RATE, pitch=TTS_PITCH)
+    vtt = os.path.join(workdir,"voice.vtt")
+    _tts(data["口播"], mp3, voice, rate=TTS_RATE, pitch=TTS_PITCH, out_vtt=vtt)
     dur_audio = float(subprocess.check_output(
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
@@ -689,6 +738,8 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     srt_segs = data.get("字幕分段") or [f"[镜{sc.get('画面','')[:20]}]" for sc in scenes]
     srt_durs = [d*scale for d in per_dur]
     real_total = total * scale
+    # 逐句真实起止(TTS 时间戳), 字幕跟配音走; 缺则 _build_* 内部等分兜底
+    cues = _vtt_cues(srt_segs, vtt, real_total, len(srt_segs))
     sub_opts = ""
     if chapters:
         # 章节按等分对齐到论点切换时刻
@@ -696,37 +747,53 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         step = real_total / ch_n
         chapters_aligned = [(round(i*step,1), textwrap.shorten(c,14)) for i,c in enumerate(chapters)]
         ass = os.path.join(workdir,"sub.ass")
-        _build_ass(srt_segs, chapters_aligned, real_total, ass)
+        _build_ass(srt_segs, chapters_aligned, real_total, ass, cues=cues)
         sub_opts = "ass=" + ass.replace(":","\\:")
     else:
         srt = os.path.join(workdir,"sub.srt")
-        _build_srt(srt_segs, srt_durs, srt)
+        _build_srt(srt_segs, srt_durs, srt, cues=cues)
         srt_esc = srt.replace(":","\\:")
         sub_opts = ("subtitles=" + srt_esc + ":"
                     f"fontsdir={FONT}:force_style="
                     "'FontName=Droid Sans Fallback,FontSize=32,FontColour=&H00FFFFFF,"
                     "OutlineColour=&H000a0e1a,Outline=2,MarginV=160,Alignment=2'")
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
-    # BGM 衬底: ffmpeg 纯合成双层正弦 pad(低频铺底+中频泛音), 音量 -26dB 压在配音下, 不抢人声
+    # ── BGM: 优先真实音乐(用户放的素材或 SV_BGM 环境变量), 缺失则合成可听垫音 ──
+    # 真实音乐来源优先级: assets/bgm/<id>.m4a|mp3|wav → env SV_BGM → 合成
+    bgm_src = None
+    _BGM_DIR = os.path.join(ASSETS_DIR, "bgm")
+    for _ext in ("m4a","mp3","wav","flac","ogg"):
+        _p = os.path.join(_BGM_DIR, f"{script_id}.{_ext}")
+        if os.path.exists(_p): bgm_src = _p; break
+    if bgm_src is None and os.environ.get("SV_BGM"):
+        bgm_src = os.environ["SV_BGM"]
     bgm = os.path.join(workdir, "bgm.wav")
-    _run(["ffmpeg","-y",
-          "-f","lavfi","-i",f"sine=frequency=66:duration={real_total:.1f}",
-          "-f","lavfi","-i",f"sine=frequency=132:duration={real_total:.1f}",
-          "-f","lavfi","-i",f"sine=frequency=198:duration={real_total:.1f}",
-          "-filter_complex",
-          "[0]volume=0.12[t0];[1]volume=0.05[t1];[2]volume=0.03[t2];"
-          "[t0][t1]amix=inputs=2:normalize=0[m1];[m1][t2]amix=inputs=2:normalize=0[m2];"
-          f"[m2]afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5,aecho=0.8:0.7:400:0.3[out]",
-          "-map","[out]","-ac","2","-ar","44100",bgm], timeout=120)
+    if bgm_src:
+        # 真实音乐: 循环填满配音时长 + 响度压到 -20 LUFS(低于配音 -16, 不抢人声)
+        _run(["ffmpeg","-y","-stream_loop","-1","-i",bgm_src,
+              "-t",f"{real_total:.1f}","-af","loudnorm=I=-20:TP=-3,afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5",
+              "-ac","2","-ar","44100",bgm], timeout=120)
+    else:
+        # 合成可听垫音: 三音和弦 + 慢 LFO + 限幅归一到 -18dB(垫底可闻不抢人声)
+        _run(["ffmpeg","-y",
+              "-f","lavfi","-i",f"sine=frequency=66:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=99:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=132:duration={real_total:.1f}",
+              "-filter_complex",
+              "[0]volume=1.0[t0];[1]volume=0.6[t1];[2]volume=0.3[t2];"
+              "[t0][t1]amix=inputs=2:normalize=0[m1];[m1][t2]amix=inputs=2:normalize=0[m2];"
+              f"[m2]tremolo=f=0.25:d=0.4,volume=8,aecho=0.8:0.7:400:0.3,"
+              f"loudnorm=I=-18:TP=-3,afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5[out]",
+              "-map","[out]","-ac","2","-ar","44100",bgm], timeout=120)
     _run([
         "ffmpeg","-y","-i",body,"-i",mp3,"-i",bgm,"-vf",
         f"{sub_opts},"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
-        # 音频: 配音(主) + BGM衬底(副) 混音, 响度规范到 -16 LUFS(短视频平台标准)
+        # 音频: 配音(主, -16 LUFS) + BGM衬底(副, 合成 0.7 / 真实 1.0) 混音, 总响度 -16 LUFS
         "-filter_complex",
         f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[voc];"
-        f"[2:a]volume=0.5[bg];"
+        f"[2:a]volume={'1.0' if bgm_src else '0.7'}[bg];"
         f"[voc][bg]amix=inputs=2:duration=first:normalize=0[mix];"
         f"[mix]loudnorm=I=-16:TP=-1.5[L]",
         "-map","0:v","-map","[L]","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",
