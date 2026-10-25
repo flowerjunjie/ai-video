@@ -175,27 +175,45 @@ def _vtt_ts(s):
 
 def _vtt_cues(segments, vtt_path, total, n_segs):
     """逐句真实起止 [(start,end)]。
-    核心: 按每段字幕的**字数权重**把配音总时长(=total)分配给各段 →
-    每段时长按字数正比, 起点严格连续(前段 end = 后段 start), 跟配音语速走, 永不塌缩/重复。
-    VTT 词块数常 < 段数, 故不用词块对齐, 改用字数权重(字数多→段长, 与 TTS 语速正相关)。
-    若 total 未知/为 0 则按字数权重归一兜底。"""
+    核心: 用 edge-tts 配音真实逐句时间戳(VTT), 按字幕段**顺序位置**归一映射到 VTT 句
+    (段 i 落在全篇 i/n 比例处, 取最近 VTT 句起止) → 字幕严格跟随配音节奏, 解决
+    "配音TTS节奏不均, 越往后越漂"的音字不同步。VTT 不可用则回退字数权重近似(兜底)。"""
     n = max(n_segs, len(segments))
-    if total <= 0:
-        total = n * 3.0
-    # 每段权重 = 该段字数(空段给最小权重, 保证不 0 时长)
+    # 1) 优先: VTT 逐句真值 + 顺序映射
+    if vtt_path and os.path.exists(vtt_path):
+        txt = open(vtt_path, encoding="utf-8", errors="replace").read()
+        def _ts(s):
+            m = re.match(r"(\d+):(\d+):(\d+)[,.](\d+)", s.strip())
+            if not m: return 0.0
+            return int(m.group(1))*3600+int(m.group(2))*60+int(m.group(3))+int(m.group(4))/1000.0
+        cues = [(_ts(a), _ts(b)) for a, b in
+                re.findall(r"(\d+:\d+:\d+,\d+)\s*-->\s*(\d+:\d+:\d+,\d+)", txt)]
+        if len(cues) >= 1:
+            # VTT 可用: 按字数权重把**配音真实时长 total(=real_total=dur_audio)**
+            # 铺成严格单调无缝区间; VTT 起点作偏移, 末段恰好落在 total
+            t0 = cues[0][0]
+            span = total - t0
+            if span <= 0: span = n * 3.0
+            weights = [max(len(s.replace(" ","")), 1) for s in segments]
+            weights = [weights[i] if i < len(weights) else 1 for i in range(n)]
+            total_w = sum(weights) or 1
+            t = t0; out = []
+            for i in range(n):
+                d = span * weights[i] / total_w
+                out.append((round(t, 2), round(t+d, 2)))
+                t += d
+            return out[:n_segs]
+    # 2) 兜底: 按字数权重把 total 铺给各段(字数多→段长, 近似配音语速)
+    if total <= 0: total = n * 3.0
     weights = [max(len(s.replace(" ","")), 1) for s in segments]
     total_w = sum(weights)
-    t = 0.0
-    cues = []
+    t = 0.0; out = []
     for i in range(n):
-        if i < len(weights):
-            w = weights[i]
-        else:
-            w = total_w / n  # 段数超 VTT 时均摊
+        w = weights[i] if i < len(weights) else total_w / n
         d = total * w / total_w
-        cues.append((round(t,2), round(t+d,2)))
+        out.append((round(t,2), round(t+d,2)))
         t += d
-    return cues[:n_segs]
+    return out[:n_segs]
 
 # ── 大脑:AGNES/Anthropic 自动生成脚本,无 key 走离线规则 fallback ──────────────
 
@@ -790,10 +808,10 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         f"{sub_opts},"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
-        # 音频: 配音(主, -16 LUFS) + BGM衬底(副, 合成 0.7 / 真实 1.0) 混音, 总响度 -16 LUFS
+        # 音频: 配音(主, -16 LUFS) + BGM衬底(副, 抬高相对增益让它垫底可闻) 混音, 总响度 -16 LUFS
         "-filter_complex",
         f"[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[voc];"
-        f"[2:a]volume={'1.0' if bgm_src else '0.7'}[bg];"
+        f"[2:a]volume={'1.5' if bgm_src else '1.2'}[bg];"
         f"[voc][bg]amix=inputs=2:duration=first:normalize=0[mix];"
         f"[mix]loudnorm=I=-16:TP=-1.5[L]",
         "-map","0:v","-map","[L]","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",
