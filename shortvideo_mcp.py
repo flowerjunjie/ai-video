@@ -132,6 +132,96 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback", cues=
     open(out, "w").write("\n".join(script))
     return out
 
+def _pick_flower_words(data, segments, n=4):
+    """挑 3-5 个 4-8 字强词做花字弹出(视觉化可截图金句, 传播记忆点)。
+    来源优先级: 章节字幕关键词 → 金句 → 封面文案; 按"短狠"排序去重。
+    没有强词则回退字幕分段里 4-8 字的句。返回 [(词, 锚定文案)]。"""
+    cands = []
+    def clean(w):
+        w = w.strip()
+        if not w or len(w) < 2 or len(w) > 8: return None
+        if re.search(r"[…\.\[\]，。、；,;.:/：·（）()]", w): return None  # 带标点/占位符的整句不用
+        return w
+    # 章节论点: "论点X：<古语关键词>…" 取冒号后的核心古语词(短狠), 跳过纯编号
+    for ch in (data.get("章节字幕") or []):
+        core = [p for p in re.split(r"[：:·]", ch)]
+        # 优先取编号之后第一段有实质内容的古语词
+        pick = None
+        for part in core:
+            if re.fullmatch(r"(核心)?论点?[0-9一二三四五六七八九十]*", part.strip()):
+                continue  # 纯编号前缀(核心论点1/论点一), 不是古语词
+            w = clean(part)
+            if w and len(w) >= 3:
+                pick = w; break
+        if pick: cands.append((pick, ch))
+    # 金句: 拆成短段
+    for part in re.split(r"[，。、；\s,.;]+", data.get("金句","")):
+        w = clean(part)
+        if w: cands.append((w, w))
+    # 封面文案: 逐行
+    for line in (data.get("封面文案") or "").splitlines():
+        w = clean(line)
+        if w and len(w) >= 3: cands.append((w, w))
+    # 去重保序 + 截断
+    seen=set(); out=[]
+    for w,anchor in cands:
+        w=w.strip()
+        if not w or w in seen: continue
+        seen.add(w); out.append((w, anchor))
+        if len(out)>=n: break
+    if not out:
+        for s in segments:
+            s=s.strip()
+            if 4<=len(s)<=8 and len(out)<n: out.append((s,s))
+    return out[:n]
+
+def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
+    """花字关键词弹出层(第三层 ASS, 烧在底部字幕上方)。
+    每个强词跟配音锚点弹出: 放大定格+淡入淡出, 落在画面中上区(不撞顶/底字幕)。
+    锚点=该词在口播里的首次出现句对应的 VTT 时刻; 缺 VTT 则按时长均分定位。"""
+    words = _pick_flower_words(data, data.get("字幕分段") or [])
+    if not words:
+        return None
+    # 锚定时刻: 每词在口播文本里找首次出现的字符位置 → 归一到 0..1 → 落 total 比例
+    spoken = data.get("口播","")
+    n_words = len(words)
+    positions=[]
+    for w,anchor in words:
+        idx = spoken.find(w) if len(w)>2 else spoken.find(anchor)
+        pos = idx/len(spoken) if (idx>=0 and spoken) else None
+        positions.append(pos)
+    # 缺锚点的按序均分, 且整体保证单调
+    filled=[]
+    last=0.0
+    for i,pos in enumerate(positions):
+        if pos is None: pos = (i+0.5)/n_words
+        pos = max(pos, last+0.02)  # 单调, 别两词挤一帧
+        filled.append(min(pos, 1.0)); last=pos
+    def a_t(sec):
+        h=int(sec//3600); m=int((sec%3600)//60); s=sec%60
+        return f"{h}:{m:02d}:{s:05.2f}"
+    # 花字窗口: 锚点前 0.1s 弹出, 持续 2.4s 定格, 淡出
+    script=[
+        "[Script Info]", "ScriptType: v4.00.000", "PlayResX: 1080", "PlayResY: 1920",
+        "WrapStyle: 0", "ScaledBorderAndShadows: yes", "",
+        "[V4+ Styles]",
+        "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        # 花字: 大号金色居中, 中上区(距顶MarginV=420 避顶部章节, 距底不碰底部64px字幕)
+        f"Style: 花字,{font},92,&H00FFD24A,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,4,2,5,40,40,420,1",
+        "", "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for (w,anchor),pos in zip(words, filled):
+        t0 = pos*total
+        st = max(0.1, t0-0.1)
+        en = min(total, t0+2.4)
+        # 放大弹出: 中心缩放 + 淡入淡出 (ASS 无原生 scale 动画, 用 \fad 近似定格闪现)
+        script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},花字,,0,0,0,,{{\\fad(180,240)}}{w}")
+    open(out,"w").write("\n".join(script))
+    return out
+
 def _render_scene(dur, workdir, idx):
     p = os.path.join(workdir, f"scene_{idx}.mp4")
     filt = (
@@ -236,6 +326,12 @@ _SYS = (
     "  - 认知落差贯穿: 中段把'大众停在字面/停在情怀'的认知误区戳破, 制造'我确实被戳中了'的代入, 这是传播的前提。\n"
     "  - 可截图金句: ⑤的金句要短狠、有节奏、能被单独截图转发当文案, 优先用对仗/反转/扎心判断句,\n"
     "  避免'听完就变'式鸡汤; 一句话让人想@朋友。\n"
+    "  - 反转公式(A面→B面): 每个论点都用'大众A面→真相B面'的认知翻转推进, 绝不全程一个声调讲道理;\n"
+    "  B面要反直觉且扎心(如'不是要更努力, 而是要更准'), 制造'信息差'让人想转给朋友。\n"
+    "  - 集尾留钩(追更感): 行动指引后用半句未解的判断或一个更大的问题收, 让人想@人/想听下条,\n"
+    "  但绝不故弄玄虚、不承诺'下期揭晓'式注水。\n"
+    "  - 花字关键词: 提炼3-5个4-8字、能被单独截下来的'爆点强词'(古语关键词/认知词/金句短语),\n"
+    "  供视频里做大号弹出花字, 是整片的视觉记忆点。词要短、狠、准, 别用长句。\n"
     "  - 结尾留传播记忆点: 行动指引给一个具体到'今晚就能做'的小事, 降低执行门槛, 强化'看完就能用'。\n"
     "\n【人设口吻】短句、留白、敢下判断;多用'你看/你有没有想过/其实';"
     "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。\n"
@@ -527,6 +623,31 @@ def _fetch_images(keywords, workdir):
             continue
     return got
 
+def _energy_durations(per_dur):
+    """能量曲线节奏(rhythm.md: 对但不爆→加起伏): 首段 hook 压短, 中段 burst 快切,
+    尾段 resolve 拉长定格。输入等宽 per_dur, 输出重加权但**总和不变**(画面总长跟配音对齐)。
+    段数少(<5)不重排(短篇节奏本就紧凑)。"""
+    n = len(per_dur)
+    if n < 5:
+        return list(per_dur)
+    base = sum(per_dur) / n
+    w = [1.0]*n
+    frac = [i/n for i in range(n)]
+    for i in range(n):
+        f = frac[i]
+        if f < 0.15:            w[i] = 0.72   # hook: 压短逼停, 密度前置
+        elif f < 0.35:          w[i] = 1.30   # 进场: 稍放慢铺陈
+        elif f < 0.65:          w[i] = 0.82   # 中段 burst: 快切密集
+        elif f < 0.88:          w[i] = 1.02   # 回升: 金句前蓄力
+        else:                   w[i] = 1.45   # 尾 resolve: 拉长定格收
+    tw = sum(w) or 1
+    # 加权后按原总和归一: 画面总长不变, 只改各段内部的节奏分布
+    out = [base * w[i] / tw for i in range(n)]
+    total_orig = sum(per_dur)
+    s = sum(out) or 1
+    k = total_orig / s
+    return [d * k for d in out]
+
 def _xfade_concat(vids, out, fade=0.5):
     """段间 0.5s 交叉溶解(爆款顺滑感)。段数>12 时回退硬切 concat 防重编码超时。
     每接一段总时长减 fade, 最终片长 = Σdur - (n-1)*fade。"""
@@ -698,6 +819,8 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         except (ValueError, IndexError):
             return 3.0
     per_dur = [_dur_of(sc) for sc in scenes]
+    # 能量曲线节奏: 首段压短/中段快切/尾段拉长(总和不变, 画面总长仍跟配音对齐)
+    per_dur = _energy_durations(per_dur)
     total = sum(per_dur)
     # 先跑 TTS 测时长 + 落 VTT 逐句时间戳(供字幕对齐配音真实语速)
     mp3 = os.path.join(workdir,"voice.mp3")
@@ -758,6 +881,10 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     real_total = total * scale
     # 逐句真实起止(TTS 时间戳), 字幕跟配音走; 缺则 _build_* 内部等分兜底
     cues = _vtt_cues(srt_segs, vtt, real_total, len(srt_segs))
+    # 花字关键词弹出层(视觉化可截图金句, 传播记忆点): 有强词才烧
+    flower_ass = _build_flower_ass(data, cues, real_total,
+                                   os.path.join(workdir,"flower.ass"))
+    flower_opt = ("ass=" + flower_ass.replace(":","\\:") + ":" if flower_ass else "")
     sub_opts = ""
     if chapters:
         # 章节按等分对齐到论点切换时刻
@@ -766,7 +893,7 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         chapters_aligned = [(round(i*step,1), textwrap.shorten(c,14)) for i,c in enumerate(chapters)]
         ass = os.path.join(workdir,"sub.ass")
         _build_ass(srt_segs, chapters_aligned, real_total, ass, cues=cues)
-        sub_opts = "ass=" + ass.replace(":","\\:")
+        sub_opts = "ass=" + ass.replace(":","\\:") + ":"
     else:
         srt = os.path.join(workdir,"sub.srt")
         _build_srt(srt_segs, srt_durs, srt, cues=cues)
@@ -774,7 +901,9 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         sub_opts = ("subtitles=" + srt_esc + ":"
                     f"fontsdir={FONT}:force_style="
                     "'FontName=Droid Sans Fallback,FontSize=32,FontColour=&H00FFFFFF,"
-                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=160,Alignment=2'")
+                    "OutlineColour=&H000a0e1a,Outline=2,MarginV=160,Alignment=2':")
+    # -vf: sub_opts 与 flower_opt 是两个独立滤镜节点, 必须逗号隔开, 别字符串硬拼(会粘成一条错误路径)
+    vf_front = (sub_opts + "," + flower_opt) if flower_opt else sub_opts
     out_mp4 = os.path.join(OUTPUT_DIR, f"{script_id}.mp4")
     # ── BGM: 优先真实音乐(用户放的素材或 SV_BGM 环境变量), 缺失则合成可听垫音 ──
     # 真实音乐来源优先级: assets/bgm/<id>.m4a|mp3|wav → env SV_BGM → 合成
@@ -805,7 +934,7 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
               "-map","[out]","-ac","2","-ar","44100",bgm], timeout=120)
     _run([
         "ffmpeg","-y","-i",body,"-i",mp3,"-i",bgm,"-vf",
-        f"{sub_opts},"
+        f"{vf_front},"
         f"scale=1080:1920:force_original_aspect_ratio=decrease,"
         f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1",
         # 音频: 配音(主, -16 LUFS) + BGM衬底(副, 抬高相对增益让它垫底可闻) 混音, 总响度 -16 LUFS
