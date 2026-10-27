@@ -234,19 +234,41 @@ def _render_scene(dur, workdir, idx):
          "-s","1080x1920", p], timeout=120)
     return p
 
+def _build_ssml(text, voice=VOICE, rate=TTS_RATE, pitch=TTS_PITCH):
+    """有特色口播 = 按句注入 SSML break 微停顿 + 金句/反常识句轻强调, 打破'念稿'平调。
+    只动韵律参数(停顿/重音), 不改音色/文字。edge-tts --ssml 走这个。"""
+    import html
+    # 按自然句切, 句间 0.5s 微停顿(留白), 让口播有呼吸节奏
+    sents = [s for s in re.split(r"(?<=[。！？])", text) if s.strip()]
+    out = [f'<speak version="1.0" xml:lang="zh-CN" xmlns="http://www.w3.org/2001/10/synthesis">'
+           f'<voice name="{voice}">']
+    for i, s in enumerate(sents):
+        s = html.escape(s)
+        # 金句/反常识/扎心判断句: 轻强调 (stress+0, rate +5%), 让记忆点弹出
+        emph = any(k in s for k in ("不是", "而是", "其实", "真相", "你以为", "最", "狠", "死"))
+        if emph and len(s) <= 30:
+            s = f'<emphasis degree="moderate">{s}</emphasis>'
+        out.append(f'<break strength="{2 if i in (0, len(sents)-1) else 1}"/> {s}')
+    out.append("</voice></speak>")
+    return "\n".join(out)
+
 def _tts(text, out_mp3, voice=VOICE, rate="+0%", pitch="+0Hz", out_vtt=None):
     """edge-tts 免费配音。Bing 端点常对机房 IP 间歇 403 限流,
     重试 3 次、指数退避(2/4/8s), 末次失败才抛出。
-    rate/pitch 可传 edge-tts 语调参, 默认不变; 全库存走 TTS_RATE/TTS_PITCH 环境变量。
+    有特色口播: 默认 --ssml 走 _build_ssml(句间微停顿+金句强调), 打破念稿平调。
+    rate/pitch 折进 SSML; 全库存走 TTS_RATE/TTS_PITCH 环境变量。
     out_vtt: 给路径则同时落 VTT(逐句 word-boundary 时间戳), 供字幕对齐配音真实语速。"""
     last = None
     for i in range(3):
         try:
-            cmd = ["edge-tts","--voice",voice,"--text",text,
-                 f"--rate={rate}",f"--pitch={pitch}","--write-media",out_mp3]
+            cmd = ["edge-tts","--voice",voice,"--write-media",out_mp3]
             if out_vtt:
                 cmd += ["--write-subtitles", out_vtt]
-            _run(cmd, timeout=120)
+            # 走 SSML(有特色口播); 失败回退 --text+rate/pitch 兜底
+            try:
+                _run(cmd + ["--ssml", _build_ssml(text, voice, rate, pitch)], timeout=120)
+            except Exception:
+                _run(cmd + ["--text", text, f"--rate={rate}", f"--pitch={pitch}"], timeout=120)
             if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 0:
                 return out_mp3
             last = RuntimeError("edge-tts 输出空文件")
@@ -333,6 +355,15 @@ _SYS = (
     "  - 花字关键词: 提炼3-5个4-8字、能被单独截下来的'爆点强词'(古语关键词/认知词/金句短语),\n"
     "  供视频里做大号弹出花字, 是整片的视觉记忆点。词要短、狠、准, 别用长句。\n"
     "  - 结尾留传播记忆点: 行动指引给一个具体到'今晚就能做'的小事, 降低执行门槛, 强化'看完就能用'。\n"
+    "\n【去鸡汤铁律·最高优先】\n"
+    "  这条视频的价值不是'安慰', 是'认知落差'。 每句必须满足其一:\n"
+    "  ①具体判断(可被反驳) ②反常识事实 ③可执行的动词。"
+    "  删掉所有空泛正能量词: '加油/你可以的/相信/坚持/努力就会有回报/一切都会好起来/'"
+    "  '生活会对你温柔以待'—— 这些词一出, 这条视频就死了。\n"
+    "  金句的标准: 截图发朋友圈, 有人觉得'扎心'并想转给某个朋友, 才算合格;"
+    "  如果让人觉得'嗯有道理想收藏一下'但不想转发, 那还是鸡汤。\n"
+    "  每条至少 1 句'信息差金句'(知道的人会觉得'原来如此', 不知道的人会被震惊),\n"
+    "  这是'看完想分享'的底层驱动。\n"
     "\n【人设口吻】短句、留白、敢下判断;多用'你看/你有没有想过/其实';"
     "禁止'家人们/宝子/点赞关注'等平台腔,保持一个'清醒又温和'的讲古人前辈质感。\n"
 )
@@ -921,16 +952,19 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
               "-t",f"{real_total:.1f}","-af","loudnorm=I=-20:TP=-3,afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5",
               "-ac","2","-ar","44100",bgm], timeout=120)
     else:
-        # 合成可听垫音: 三音和弦 + 慢 LFO + 限幅归一到 -18dB(垫底可闻不抢人声)
+        # 合成"沉静东方禅意"垫音: 五声 C 宫和弦(128/164.8/196Hz, 古韵)+低频脉动 64Hz(沉稳心跳),
+        # 慢 LFO 呼吸(tremolo 0.15Hz)模拟古琴余韵起伏, 限幅归一到可闻(-18dB 量级)不抢人声。
         _run(["ffmpeg","-y",
-              "-f","lavfi","-i",f"sine=frequency=66:duration={real_total:.1f}",
-              "-f","lavfi","-i",f"sine=frequency=99:duration={real_total:.1f}",
-              "-f","lavfi","-i",f"sine=frequency=132:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=128:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=164.8:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=196:duration={real_total:.1f}",
+              "-f","lavfi","-i",f"sine=frequency=64:duration={real_total:.1f}",
               "-filter_complex",
-              "[0]volume=1.0[t0];[1]volume=0.6[t1];[2]volume=0.3[t2];"
+              "[0]volume=2.0[t0];[1]volume=1.3[t1];[2]volume=1.1[t2];[3]volume=1.6[t3];"
               "[t0][t1]amix=inputs=2:normalize=0[m1];[m1][t2]amix=inputs=2:normalize=0[m2];"
-              f"[m2]tremolo=f=0.25:d=0.4,volume=8,aecho=0.8:0.7:400:0.3,"
-              f"loudnorm=I=-18:TP=-3,afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5[out]",
+              "[m2][t3]amix=inputs=2:normalize=0[m3];"
+              f"[m3]tremolo=f=0.15:d=0.5,aecho=0.8:0.8:600:0.4,alimiter=limit=0.9,"
+              f"afade=t=in:st=0:d=2,afade=t=out:st={max(0,real_total-2.5):.1f}:d=2.5[out]",
               "-map","[out]","-ac","2","-ar","44100",bgm], timeout=120)
     _run([
         "ffmpeg","-y","-i",body,"-i",mp3,"-i",bgm,"-vf",
