@@ -175,18 +175,39 @@ def _pick_flower_words(data, segments, n=4):
             if 4<=len(s)<=8 and len(out)<n: out.append((s,s))
     return out[:n]
 
+def _pick_number_cards(data, n=2):
+    """识别口播里的量化判断句(含数字/百分之/N个/N条/N次), 做爆款'数字计数卡'。
+    返回 [(句子, 锚定句)]。句子要短(≤12字, 带数字), 是认知钩子不是纯陈述。"""
+    spoken = data.get("口播","")
+    # 按句切, 找含数字/量化词且短的句(≤14字, 认知钩子非纯陈述)
+    pat = re.compile(r"(百分之?\s*\d+|\d+\s*%|[一二两三四五六七八九十]\s*(?:个|条|次|点|步|种|层|步|个事实)|\d+\s*(?:个|条|次|点|步|种|层|事实|条))")
+    out=[]; seen=set()
+    for s in re.split(r"(?<=[。！？])", spoken):
+        s=s.strip()
+        if not s or len(s)>14: continue
+        if not pat.search(s): continue
+        if s in seen: continue
+        seen.add(s); out.append((s,s))
+        if len(out)>=n: break
+    return out
+
 def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
     """花字关键词弹出层(第三层 ASS, 烧在底部字幕上方)。
     每个强词跟配音锚点弹出: 放大定格+淡入淡出, 落在画面中上区(不撞顶/底字幕)。
     锚点=该词在口播里的首次出现句对应的 VTT 时刻; 缺 VTT 则按时长均分定位。"""
     words = _pick_flower_words(data, data.get("字幕分段") or [])
-    if not words:
+    # 数字计数卡: 口播量化判断句(90%的人/三个事实), 做更大字号爆款记忆点。
+    # 数字卡是整句 → 标记为不可逐字拆分, 单独渲染整行大卡(去句尾标点)。
+    num_cards = [(s.rstrip("。！？，、 "), s) for s, _a in _pick_number_cards(data)]
+    if not words and not num_cards:
         return None
     # 锚定时刻: 每词在口播文本里找首次出现的字符位置 → 归一到 0..1 → 落 total 比例
     spoken = data.get("口播","")
-    n_words = len(words)
+    # 花字逐字 + 数字卡整句, 合并算锚点(保证时间轴单调不重叠)
+    all_items = [(w, a, False) for w, a in words] + [(s, s, True) for s, sa in num_cards]
+    n_items = len(all_items)
     positions=[]
-    for w,anchor in words:
+    for w, anchor, is_num in all_items:
         idx = spoken.find(w) if len(w)>2 else spoken.find(anchor)
         pos = idx/len(spoken) if (idx>=0 and spoken) else None
         positions.append(pos)
@@ -194,13 +215,15 @@ def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
     filled=[]
     last=0.0
     for i,pos in enumerate(positions):
-        if pos is None: pos = (i+0.5)/n_words
+        if pos is None: pos = (i+0.5)/n_items
         pos = max(pos, last+0.02)  # 单调, 别两词挤一帧
         filled.append(min(pos, 1.0)); last=pos
     def a_t(sec):
         h=int(sec//3600); m=int((sec%3600)//60); s=sec%60
         return f"{h}:{m:02d}:{s:05.2f}"
     # 花字窗口: 锚点前 0.1s 弹出, 持续 2.4s 定格, 淡出
+    # 逐字 staggered kinetic type: 每个字符 60ms 错开淡入, 整句"打字机"式弹出
+    # 花字=逐字 kinetic; 数字卡=整句一行大卡(不逐字拆)
     script=[
         "[Script Info]", "ScriptType: v4.00.000", "PlayResX: 1080", "PlayResY: 1920",
         "WrapStyle: 0", "ScaledBorderAndShadows: yes", "",
@@ -208,17 +231,24 @@ def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # 花字: 大号金色居中, 中上区(距顶MarginV=420 避顶部章节, 距底不碰底部64px字幕)
+        # 花字: 大号金色中上区(MarginV=420 避顶部章节 + 底部 64px 字幕)
         f"Style: 花字,{font},92,&H00FFD24A,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,4,2,5,40,40,420,1",
+        # 数字卡: 更大字号 + 亮金色, 爆款记忆点
+        f"Style: 数字卡,{font},140,&H00FFFF55,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,6,2,5,40,40,380,1",
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for (w,anchor),pos in zip(words, filled):
+    for (w, anchor, is_num), pos in zip(all_items, filled):
         t0 = pos*total
         st = max(0.1, t0-0.1)
         en = min(total, t0+2.4)
-        # 放大弹出: 中心缩放 + 淡入淡出 (ASS 无原生 scale 动画, 用 \fad 近似定格闪现)
-        script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},花字,,0,0,0,,{{\\fad(180,240)}}{w}")
+        sty = "数字卡" if is_num else "花字"
+        if is_num:
+            # 数字卡: 整句一行大卡, 不逐字拆, 一次性弹入淡出
+            script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},{sty},,0,0,0,,{{\\fad(160,240)}}{w}")
+        else:
+            # 花字: 整行统一淡入淡出(kinetic 弹出), 不逐字拆 — 逐字拆会把英文/标点打散跳帧
+            script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},{sty},,0,0,0,,{{\\fad(160,240)}}{w}")
     open(out,"w").write("\n".join(script))
     return out
 
