@@ -1293,5 +1293,37 @@ def list_scripts() -> list:
     """列出 scripts/ 目录下所有脚本 JSON 文件。"""
     return sorted(f[:-5] for f in os.listdir(SCRIPTS_DIR) if f.endswith(".json"))
 
+@mcp.tool()
+def data_reflow(metrics: list, auto_next: int = 3) -> dict:
+    """
+    数据回流一键闭环: 把发布后从抖音创作服务平台导出的 (播放/完播率/点赞/评论/转发)
+    结构化落盘 → 分析哪类题材完播高/低 → 自动产下一批高完播选题喂回 scripts/。
+    发布→收数据→学→再产 一条命令跑完, 补上"现象级爆款"打法缺的数据闭环。
+    metrics=[{id, 平台, 播放, 完播率(%), 点赞, 评论, 转发}, ...]
+    auto_next=0 则只回流不产新选题。
+    返回: {回流统计, 高低完播归因, 新选题列表}
+    """
+    imp = import_metrics(metrics)
+    if not imp.get("ok"):
+        return imp
+    latest = json.load(open(imp["latest"]))
+    rank = sorted(latest, key=lambda r: r.get("完播率", 0), reverse=True)
+    top = [r["id"] for r in rank[:3]]
+    low = [r["id"] for r in reversed(rank[-3:])]
+    low = [x for x in low if x not in top] or ([rank[-1]["id"]] if len(latest) > 1 else [])
+    low_rows = [r for r in rank if r["id"] in low]
+    result = {
+        "ok": True,
+        "回流条数": len(latest),
+        "平均完播率": imp.get("avg完播率"),
+        "高完播": rank[:3],
+        "低完播": low_rows,
+        "落盘": imp["path"],
+    }
+    if auto_next > 0:
+        nxt = auto_next_topics(n=auto_next)
+        result["自动下一批选题"] = nxt
+    return result
+
 if __name__ == "__main__":
     asyncio.run(mcp.run_stdio_async())
