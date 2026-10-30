@@ -11,6 +11,8 @@ output/*
 !output/王阳明龙场悟道.mp4
 !output/庄子逍遥游.mp4
 !output/庄子逍遥游_理性视角.mp4
+# P1 35s 快剪双版全库存入库(快剪是这轮"现象级爆款"完播结构卖点)
+!output/*_fast35.mp4
 publish/*
 !publish/.gitkeep
 metrics/*

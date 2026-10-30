@@ -184,7 +184,7 @@ def _pick_number_cards(data, n=2):
     out=[]; seen=set()
     for s in re.split(r"(?<=[。！？])", spoken):
         s=s.strip()
-        if not s or len(s)>14: continue
+        if not s or len(s)>10: continue  # 110px 大卡 10 字内不贴满两侧
         if not pat.search(s): continue
         if s in seen: continue
         seen.add(s); out.append((s,s))
@@ -201,14 +201,30 @@ def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
     num_cards = [(s.rstrip("。！？，、 "), s) for s, _a in _pick_number_cards(data)]
     if not words and not num_cards:
         return None
-    # 锚定时刻: 每词在口播文本里找首次出现的字符位置 → 归一到 0..1 → 落 total 比例
+    # 锚定时刻: 锚到"认知反转高潮句"而非"词首现" — 花字全片唯一可截图传播载体,
+    # 弹在停留峰值才抓得住人。认知词命中句(不是/真相/其实/你以为/最/狠)的字符位,
+    # 取该词所在句里认知词首次出现处; 无认知词回退词首现。 → 归一到 0..1 → 落 total 比例
     spoken = data.get("口播","")
-    # 花字逐字 + 数字卡整句, 合并算锚点(保证时间轴单调不重叠)
+    _cog = ("不是", "真相", "其实", "你以为", "最", "狠", "反而", "扎心", "误区", "错")
+    def _cog_pos(w):
+        # 找 w 所在的认知句, 返回认知词首次出现位置; 否则返回 w 首现位置
+        segs = [s for s in re.split(r"(?<=[。！？])", spoken) if s.strip()]
+        for seg in segs:
+            if w in seg or (len(w)>2 and w in seg):
+                for k in _cog:
+                    ki = seg.find(k)
+                    if ki >= 0:
+                        return spoken.find(seg)+ki
+        return spoken.find(w)  # 无认知词回退首现
+    # 花字 + 数字卡, 合并算锚点(保证时间轴单调不重叠)
     all_items = [(w, a, False) for w, a in words] + [(s, s, True) for s, sa in num_cards]
     n_items = len(all_items)
     positions=[]
     for w, anchor, is_num in all_items:
-        idx = spoken.find(w) if len(w)>2 else spoken.find(anchor)
+        if is_num:
+            idx = spoken.find(w) if len(w)>2 else spoken.find(anchor)
+        else:
+            idx = _cog_pos(w)
         pos = idx/len(spoken) if (idx>=0 and spoken) else None
         positions.append(pos)
     # 缺锚点的按序均分, 且整体保证单调
@@ -221,9 +237,10 @@ def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
     def a_t(sec):
         h=int(sec//3600); m=int((sec%3600)//60); s=sec%60
         return f"{h}:{m:02d}:{s:05.2f}"
-    # 花字窗口: 锚点前 0.1s 弹出, 持续 2.4s 定格, 淡出
-    # 逐字 staggered kinetic type: 每个字符 60ms 错开淡入, 整句"打字机"式弹出
-    # 花字=逐字 kinetic; 数字卡=整句一行大卡(不逐字拆)
+    # 花字窗口: pop 弹出(300ms 0→108% 放大到位)+定格 1.6s(短于旧 2.4s 拖节奏)+180ms 收。
+    # 叠印根治: 花字与数字卡同 Alignment=2 底置中, 旧 MarginV 420/380 落点几乎重合
+    # (92px顶≈1394 / 140px顶≈1400), 同段弹出叠印。分竖带: 花字520(65%高,顶≈1300),
+    # 数字卡降 110px+MarginV460(顶≈1390), 两带拉开~90px 不叠印。
     script=[
         "[Script Info]", "ScriptType: v4.00.000", "PlayResX: 1080", "PlayResY: 1920",
         "WrapStyle: 0", "ScaledBorderAndShadows: yes", "",
@@ -231,24 +248,23 @@ def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
         "Format: Style, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        # 花字: 大号金色中上区(MarginV=420 避顶部章节 + 底部 64px 字幕)
-        f"Style: 花字,{font},92,&H00FFD24A,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,4,2,5,40,40,420,1",
-        # 数字卡: 更大字号 + 亮金色, 爆款记忆点
-        f"Style: 数字卡,{font},140,&H00FFFF55,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,6,2,5,40,40,380,1",
+        # 花字: 金色 65% 高度带, 52 起放大 pop(动效里 \t 从 52→108%)
+        f"Style: 花字,{font},92,&H00FFD24A,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,4,2,5,40,40,520,1",
+        # 数字卡: 110px(缩自140防贴满两侧)+亮金, 更高竖带 MarginV460, 与花字分带不叠
+        f"Style: 数字卡,{font},110,&H00FFFF55,&H00FFFFFF,&H000A0E1A,&H800A0E1A,-1,0,0,0,108,108,2,0,1,6,2,5,40,40,460,1",
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    # pop 动效: 300ms 内 \fscx/\fscy 52→108% 放大弹入(不是淡入), 定格 1.6s, 尾 180ms \fad 收。
+    # 花字/数字卡都用同一套 pop+收, 数字卡字号更大观感更强。
+    dur_hold = 1.6
     for (w, anchor, is_num), pos in zip(all_items, filled):
         t0 = pos*total
         st = max(0.1, t0-0.1)
-        en = min(total, t0+2.4)
+        en = min(total, t0+dur_hold+0.18)  # pop(0.3)+定格1.6+收(0.18) 约2.08s, 比旧2.4s快
         sty = "数字卡" if is_num else "花字"
-        if is_num:
-            # 数字卡: 整句一行大卡, 不逐字拆, 一次性弹入淡出
-            script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},{sty},,0,0,0,,{{\\fad(160,240)}}{w}")
-        else:
-            # 花字: 整行统一淡入淡出(kinetic 弹出), 不逐字拆 — 逐字拆会把英文/标点打散跳帧
-            script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},{sty},,0,0,0,,{{\\fad(160,240)}}{w}")
+        pop = (r"{\fad(0,180)}{\t(0,300,\fscx52 108 \fscy52 108)}")
+        script.append(f"Dialogue: 2,{a_t(st)},{a_t(en)},{sty},,0,0,0,,{pop}{w}")
     open(out,"w").write("\n".join(script))
     return out
 
@@ -385,6 +401,20 @@ _SYS = (
     "  - 花字关键词: 提炼3-5个4-8字、能被单独截下来的'爆点强词'(古语关键词/认知词/金句短语),\n"
     "  供视频里做大号弹出花字, 是整片的视觉记忆点。词要短、狠、准, 别用长句。\n"
     "  - 结尾留传播记忆点: 行动指引给一个具体到'今晚就能做'的小事, 降低执行门槛, 强化'看完就能用'。\n"
+    "\n【爆款文案五条硬规则·逐条自检, 写进产出】\n"
+    "  R1 钩子场景前置+数字锤: 第一句禁抽象立论。先给一个'带具体数字/行为的高频场景'\n"
+    "  让人对号入座(如'投了50份简历一个没回/凌晨3点还在改方案'), 再用一句认知落差锤下。\n"
+    "  钩子 = 场景代入 + 反差判断, 缺一不可。\n"
+    "  R2 金句三要素: 金句必须同时含①一个具象行为动词 ②可被反驳的强判断 ③一个具体名词/数字锚。\n"
+    "  三要素缺一只写对仗不扎心, 判不合格重写。禁'不是奔跑, 是校准'式纯抽象对仗。\n"
+    "  R3 单点打穿: 只打穿1个认知点(主古语+1个当代场景砸到底), 交叉古语降级为一句佐证带过,\n"
+    "  不得并列铺开。自检: 删掉某段后主线不塌就该删。\n"
+    "  R4 抽象名词替换律: 出现'认知负债/因果链/系统报错/底层逻辑'等逼格抽象词时,\n"
+    "  强制换成'行为动词+具体数字'(如'把失败甩给运气'→'投了50份全没回你怪行业冷漠')。\n"
+    "  单句抽象名词>2个即判文气超标重写。\n"
+    "  R5 指向他人具象锚(转发驱动): 金句尾部落一个职业/身份/情境词(加班的/被AI替代的程序员/\n"
+    "  内耗的人), 让金句变成'这句话说的是哪个具体的人', 触发'@那个朋友'而非'收藏一下'。\n"
+    "  验收: 金句让人想@某朋友=合格; 只想收藏=鸡汤重写。\n"
     "\n【去鸡汤铁律·最高优先】\n"
     "  这条视频的价值不是'安慰', 是'认知落差'。 每句必须满足其一:\n"
     "  ①具体判断(可被反驳) ②反常识事实 ③可执行的动词。"
@@ -1011,18 +1041,81 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         "-c:a","aac","-b:a","192k","-t", f"{real_total:.1f}",
         out_mp4
     ], timeout=900)
-    # 封面
+    # 封面: 抽开场最强钩子帧(~0.8s, 前3秒悬念最大), 而非 35% 过程帧 — CTR 直接拉前3秒跳出
     cover = os.path.join(OUTPUT_DIR, f"{script_id}_cover.png")
-    _run(["ffmpeg","-y","-ss",str(total*0.35),"-i",out_mp4,"-frames:v","1",cover], timeout=60)
+    _run(["ffmpeg","-y","-ss","0.8","-i",out_mp4,"-frames:v","1",cover], timeout=60)
     sz = os.path.getsize(out_mp4) / 1024 / 1024
     # 成片真实时长(含补拍尾镜), 而非仅音频时长
     dur_video = float(subprocess.check_output(
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",out_mp4],
         text=True).strip())
+    # ── P1: 35s 快剪双版 — 同一条内容吃两次流量池, 短版完播率撬动推荐 ──
+    # 取前3s钩子 + 中段最强认知反转句 + 金句收尾, 掐掉论证注水层。
+    clip = _make_fast_clip(out_mp4, cues, srt_segs, dur_audio, real_total, script_id)
     return {"ok": True, "mp4": out_mp4, "cover": cover,
+            "clip35": clip,
             "duration_s": round(dur_video,1), "audio_s": round(dur_audio,1),
             "size_mb": round(sz,1),
             "visual": "free-B-roll" if _assets_used else "neon-grid(fallback, 配 PEXELS/PIXABAY key 后自动升级)"}
+
+def _make_fast_clip(src, cues, segments, dur_audio, real_total, script_id):
+    """35s 快剪双版: 前3s钩子 + 中段最强认知反转句 + 金句收尾, 掐掉论证注水层。
+    从已完成的主成片 out.mp4 里取三段拼成≤35s, 复用已渲染画面+音轨, 不重跑 TTS/xfade。
+    段边界用 cues(VTT 逐句时间戳) 定位: 头=第1句, 中=含认知反转词的最强句, 尾=金句/行动句。
+    segments=字幕分段文本列表(与 cues 同序), 供认知反转句定位。"""
+    out = os.path.join(OUTPUT_DIR, f"{script_id}_fast35.mp4")
+    if not os.path.exists(src) or dur_audio < 8:
+        return out if os.path.exists(out) else None
+    # cues = [(start,end),...]; 无则等分兜底; 文本从 segments 取
+    if cues:
+        starts=[c[0] for c in cues]
+        n=len(cues)
+    else:
+        step=real_total/max(1,real_total//3.0); starts=[i*step for i in range(int(real_total/step))]
+        n=len(starts)
+    texts=[(segments[i] if i < len(segments) else "") for i in range(n)]
+    _cog=("不是","真相","其实","你以为","最","反而","误区","扎心","错","负债")
+    # 中段最强认知反转句: 含认知词且越靠后越接近"反转高潮"(取后 1/3 段里的第一个认知句)
+    strong_mid = None
+    for i,t in enumerate(texts):
+        if any(k in t for k in _cog) and i >= len(texts)//3:
+            strong_mid = i; break
+    if strong_mid is None: strong_mid = len(texts)//2
+    tail = len(texts)-1  # 尾=最后句(金句/行动)
+    # ── 三段铺到"干货"而非单段: 头3s钩子 + 中=认知反转句前后各扩2段 + 尾=末3段 ──
+    head_s = 0.0
+    head_e = 3.0
+    M = 2
+    mid_i0, mid_i1 = max(0, strong_mid-M), min(len(texts)-1, strong_mid+M)
+    mid_s = starts[mid_i0]; mid_e = starts[mid_i1+1] if mid_i1+1 < len(texts) else real_total
+    T = 3
+    tail_i0 = max(0, tail-T+1)
+    tail_s = starts[tail_i0]; tail_e = real_total
+    # 段边界(可能重叠), 归并为不重叠连续区间(重叠段只取一次, 防重复播放)
+    spans = []
+    for a,b in ((head_s,head_e),(mid_s,mid_e),(tail_s,tail_e)):
+        if a >= b: continue
+        if spans and a < spans[-1][1]: b = max(b, spans[-1][1])  # 接上重叠
+        spans.append((a,b))
+    spans.sort()
+    # 三段剪法(用主成片裁): 头钩子 + 中认知反转 + 尾金句, 掐掉中段论证注水层
+    wd = os.path.join(os.path.dirname(src), "fast35")
+    os.makedirs(wd, exist_ok=True)
+    segs=[]
+    for k,(a,b) in enumerate(spans):
+        p=os.path.join(wd,f"seg_{k}.mp4")
+        _run(["ffmpeg","-y","-ss",f"{a:.2f}","-i",src,"-t",f"{max(0.5,b-a):.2f}",
+              "-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-r","30",
+              "-c:a","aac","-b:a","192k",p], timeout=120)
+        if os.path.exists(p) and os.path.getsize(p)>0: segs.append(p)
+    if len(segs)<2: return out if os.path.exists(out) else None
+    # 拼接(短快剪硬切即可, 不做 xfade, 追求"快")
+    listf=os.path.join(wd,"list.txt"); open(listf,"w").write("".join(f"file '{os.path.abspath(s)}'\n" for s in segs))
+    # 目标≤35s: 拼完按 35s 截断 + 尾淡出
+    _run(["ffmpeg","-y","-f","concat","-safe","0","-i",listf,
+          "-t","35","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-r","30",
+          "-af","afade=t=out:st=33.5:d=1.5","-c:a","aac","-b:a","192k",out], timeout=120)
+    return out if os.path.exists(out) else None
 
 @mcp.tool()
 def polish_script(script_id: str) -> dict:
