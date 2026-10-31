@@ -1173,6 +1173,7 @@ def prepare_publish(ids, platform: str = "抖音", schedule: str = "今天 18:00
         kw = d.get("免费素材关键词") or []
         mp4 = os.path.join(OUTPUT_DIR, f"{sid}.mp4")
         cover = os.path.join(OUTPUT_DIR, f"{sid}_cover.png")
+        fast35 = os.path.join(OUTPUT_DIR, f"{sid}_fast35.mp4")
         tags = [d.get("栏目", "用AI讲古"), "王阳明", "认知", "哲学", "成长",
                 *kw[:3]]
         plan.append({
@@ -1188,6 +1189,9 @@ def prepare_publish(ids, platform: str = "抖音", schedule: str = "今天 18:00
             "禁用语检查": _check_banned(d.get("口播", "") + " " + " ".join(titles)),
             "成片": mp4 if os.path.exists(mp4) else "(未合成,先 compose_video)",
             "封面": cover if os.path.exists(cover) else "(未合成)",
+            # P1 快剪双版: 同一条吃两次流量池, 主片(完整论证) + 35s快剪(完播结构)
+            "快剪成片": fast35 if os.path.exists(fast35) else "(无35s快剪)",
+            "快剪标题": ((titles[0] + " · 30秒看懂") if titles else f"{sid} · 30秒版"),
         })
     outp = os.path.join(PUBLISH_DIR, "发布计划.json")
     json.dump({"platform": platform, "schedule": schedule,
