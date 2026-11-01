@@ -479,6 +479,34 @@ def _provider():
             return "agnes"
     return "anthropic"
 
+def _scrub_fake_contrast(data):
+    """正则后处理: AGNES 偶尔漏写"不是X而是Y / 你以为X其实Y / 不只是X更是Y"假对比壳
+    (R4b/D4 规则压制不住 100% 输出), 引擎兜底——删 X 半留 Y 半, 把假对比改直说。
+    只对 口播/钩子/金句/行动指引 文本字段生效, 古语字段绝不动(引文校验红线)。"""
+    def _fix(s):
+        if not s: return s
+        # 只删"假对比壳"被垫高的 X 半, 保留 Y 半。匹配范围允许 X 半内部带逗号,
+        # 但用 [^，。；]{1,16} 限长防越界吞到下一个独立句。
+        # ① "不是A，而是B" / "不是A，是B" → 删 A 半留 B (B 保留开头指代词)
+        s = re.sub(r"不是([^，。；]{1,16})[,，]而是([^，。；]{1,24})", r"\2", s)
+        s = re.sub(r"不是([^，。；]{1,16})[,，]是([^，。；]{1,24})", r"\2", s)
+        # ② "你以为A，其实B" / "A以为…其实B" → 删 A 半留 B
+        s = re.sub(r"(?:你以为|以为)([^，。；]{1,16})[,，]?其实([^，。；]{1,24})", r"\2", s)
+        # ③ "不只是A，更是B" → 删 A 半留 B
+        s = re.sub(r"不只是([^，。；]{1,16})[,，]更是([^，。；]{1,24})", r"\2", s)
+        # 清双标点 + 行首残留
+        s = re.sub(r"([,，。])\1+", r"\1", s)
+        s = re.sub(r"^[,，。]+", "", s)
+        return s
+    for k in ("口播", "钩子", "金句", "行动指引", "冲突"):
+        if k in data and isinstance(data[k], str):
+            data[k] = _fix(data[k])
+    # 字幕分段是列表, 逐条修
+    if isinstance(data.get("字幕分段"), list):
+        data["字幕分段"] = [_fix(s) for s in data["字幕分段"]]
+    return data
+
+
 def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
     """调用 AGNES(OpenAI 兼容,默认)或 Anthropic 生成完整脚本 dict。无 key 返回 None。"""
     if not AI_KEY:
@@ -516,6 +544,7 @@ def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
         data = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
         for k in ("标题候选","分镜","字幕分段"):
             data.setdefault(k, [])
+        _scrub_fake_contrast(data)
         return data
     except Exception as e:
         return {"_error": str(e)[:200]}
