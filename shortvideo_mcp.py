@@ -591,6 +591,7 @@ def _gen_script(topic, column, tone, duration: str = "60-90s"):
     if ai and "_error" not in ai:
         ai["_engine"] = f"{_provider()}/{AI_MODEL}"
         ai["目标时长"] = duration
+        _anchor_gate(ai)   # 引擎硬关卡: 金句缺可转发具象锚 → 强制 AGNES 重写一轮
         return ai
     reason = (ai or {}).get("_error", "key 未配置")
     off = _gen_script_offline(topic, column, tone)
@@ -598,6 +599,70 @@ def _gen_script(topic, column, tone, duration: str = "60-90s"):
     off["_ai_error"] = reason
     off["目标时长"] = duration
     return off
+
+
+# 可转发具象锚词库(职业/身份/场景/数字/平台) — R5 硬校验用。
+# 金句必须命中 ≥1 个, 否则观众"对不上号", 划走(诊断出的真正病灶)。
+_ANCHOR_WORDS = [
+    "程序员","码农","工程师","后端","前端","算法","简历","面试","offer","Offer",
+    "老板","甲方","同事","下属","主管","996","加班","通宵","房贷","房租","外卖",
+    "深夜","凌晨","屏幕","手机","朋友圈","小红书","抖音","快手","B站","b站",
+    "考研","考公","专升本","应届","实习生","外卖员","司机","护士","医生",
+    "信息差","负债","本金","本金","复利","裁员","被裁","降薪","KPI","okr",
+    "客户","交付","上线","宕机","崩溃","报错","bug","Bug","爬虫","大模型","AI",
+]
+
+def _anchor_gate(data):
+    """引擎硬校验(R5): 金句无可转发具象锚(职业/场景/数字/平台词)时, 强制 AGNES 重写一轮,
+    把泛化主语('你/普通人')落到具体身份('被裁的程序员/投简历的应届生'), 触发'@那个朋友'。
+    古语字段绝不动。最多重写 1 轮(避免无限循环), 仍不命中则保留并标记 _anchor_weak。"""
+    gold = data.get("金句", "")
+    if not gold:
+        return
+    has = any(w in gold for w in _ANCHOR_WORDS)
+    if has:
+        return
+    # 缺锚 → 调 AGNES 把金句改写得更具象
+    if not AI_KEY:
+        data["_anchor_weak"] = True
+        return
+    prov = _provider()
+    user = (f"这条'用AI讲古'视频的金句太泛、观众对不上号: {gold}\n"
+            "请只重写这条金句, 保留原判断的狠劲与信息差, 但把主语/落点换成一个"
+            "具体的职业/身份/场景/数字/平台词(如被裁的程序员/投了50份简历的应届生/"
+            "996的工程师/凌晨3点改方案的乙方), 让它能被截图@给某个具体的人。"
+            "只输出 JSON: {\"金句\":\"...\"}, 无 markdown。")
+    try:
+        if prov == "agnes":
+            import openai
+            cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=200,
+                  messages=[{"role":"system","content":_SYS[:2000]},
+                            {"role":"user","content":user}])
+            txt = r.choices[0].message.content or ""
+        else:
+            import anthropic
+            cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+            r = cli.messages.create(model=AI_MODEL, max_tokens=200, system=_SYS[:2000],
+                  messages=[{"role":"user","content":user}])
+            txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+        txt = txt.strip().lstrip("`").rstrip("`")
+        nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+        new_gold = (nd.get("金句") or "").strip()
+        if new_gold and any(w in new_gold for w in _ANCHOR_WORDS):
+            data["金句"] = new_gold
+            # 同步口播里对应金句(保持音字一致), 按原金句子串替换
+            if data.get("口播") and gold in data["口播"]:
+                data["口播"] = data["口播"].replace(gold, new_gold)
+            if isinstance(data.get("字幕分段"), list):
+                data["字幕分段"] = [s.replace(gold, new_gold) if isinstance(s, str) else s
+                                    for s in data["字幕分段"]]
+            data["_anchor_fixed"] = True
+        else:
+            data["_anchor_weak"] = True
+    except Exception:
+        data["_anchor_weak"] = True
+    return
 
 def _polish_ai(data):
     """雕琢已有脚本的文案:把口播重写得更扎心(钩子更强/金句更狠/案例更具体),
