@@ -158,8 +158,11 @@ def _pick_flower_words(data, segments, n=4):
     for part in re.split(r"[，。、；\s,.;]+", data.get("金句","")):
         w = clean(part)
         if w: cands.append((w, w))
-    # 封面文案: 逐行
-    for line in (data.get("封面文案") or "").splitlines():
+    # 封面文案: 逐行(兼容 AGNES 偶发返回 list 的脏脚本, 防 compose 崩)
+    cov = data.get("封面文案") or ""
+    if isinstance(cov, list):
+        cov = "｜".join(str(x) for x in cov)
+    for line in cov.splitlines():
         w = clean(line)
         if w and len(w) >= 3: cands.append((w, w))
     # 去重保序 + 截断
@@ -544,6 +547,10 @@ def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
         data = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
         for k in ("标题候选","分镜","字幕分段"):
             data.setdefault(k, [])
+        # 契约硬化: AGNES 偶发把"封面文案"返回成 list(如["行1","行2"]), 而
+        # _pick_flower_words 按 .splitlines() 消费、prepare_publish 直接透传——统一到 str。
+        if isinstance(data.get("封面文案"), list):
+            data["封面文案"] = "｜".join(str(x) for x in data["封面文案"])
         _scrub_fake_contrast(data)
         return data
     except Exception as e:
@@ -592,6 +599,7 @@ def _gen_script(topic, column, tone, duration: str = "60-90s"):
         ai["_engine"] = f"{_provider()}/{AI_MODEL}"
         ai["目标时长"] = duration
         _anchor_gate(ai)   # 引擎硬关卡: 金句缺可转发具象锚 → 强制 AGNES 重写一轮
+        _soup_gate(ai)     # 引擎硬关卡: 口播/金句命中鸡汤空话或抽象名词 → 强制 AGNES 重写一轮
         return ai
     reason = (ai or {}).get("_error", "key 未配置")
     off = _gen_script_offline(topic, column, tone)
@@ -663,6 +671,86 @@ def _anchor_gate(data):
     except Exception:
         data["_anchor_weak"] = True
     return
+
+
+# 鸡汤/庸常空话词库 — R3 去鸡汤铁律引擎硬校验用。
+# 命中 ≥1 即判"空泛正能量/说教", 观众听完只想"收藏"不想"转发"。
+# 古语字段绝不动(古语本身就含"坚持/相信"等, 只在口播/钩子/金句/行动指引上查)。
+_SOU_WORDS = [
+    "加油","你可以的","相信","坚持","努力就会有回报","一切都会好起来",
+    "相信自己","你会越来越","都会好起来的","只要","别放弃","放轻松",
+    "要从容","要豁达","要学会","慢慢来","静下来","把心放宽","想开点",
+]
+# 抽象名词(认知负债/因果链/系统报错...) — R4 抽象名词替换律引擎硬校验用。
+# 单句 ≥2 个判文气, 强制改行为动词+数字。
+_ABSTRACT_WORDS = [
+    "认知负债","因果链","系统报错","认知重构","底层逻辑","信息熵",
+    "熵增","涌现","递归","对齐难题","元认知","认知框架","心智模型",
+]
+
+def _soup_gate(data):
+    """引擎硬校验(R3 去鸡汤 + R4 抽象名词): 口播/金句命中鸡汤空话或抽象名词时,
+    强制 AGNES 重写一轮, 把空泛正能量/文气抽象词砸成'可执行动词+具体数字/场景'。
+    古语绝不动。最多 1 轮(防无限循环), 仍命中则保留并标记 _soup_weak。
+    命中定位: 口播(主战场)+金句+钩子+行动指引; 古语/章节跳过。"""
+    def _hits(s):
+        out = [w for w in _SOU_WORDS if w in s]
+        out += [w for w in _ABSTRACT_WORDS if w in s]
+        return out
+    targets = [k for k in ("口播","金句","钩子","行动指引") if data.get(k) and _hits(data[k])]
+    if not targets:
+        return
+    bad = ", ".join(f"{k}:{'、'.join(_hits(data[k]))}" for k in targets)
+    if not AI_KEY:
+        data["_soup_weak"] = True
+        return
+    prov = _provider()
+    old_dump = json.dumps({k: data.get(k) for k in targets}, ensure_ascii=False)
+    user = (f"这条'用AI讲古'视频这几段文案空泛/文气, 观众听完只想收藏不想转发: {old_dump}\n"
+            f"命中词: {bad}\n"
+            "请只重写这几段, 铁律: ①删掉所有空泛正能量词(加油/相信/坚持/都会好起来/要从容/要豁达...), "
+            "换成今晚就能做的具体动词+一个可截图的数字或场景; ②抽象名词(认知负债/因果链/系统报错/涌现/递归...) "
+            "换成行为动词+数字, 单句最多 1 个; ③保留原判断的狠劲与信息差, 古语出处绝不动。"
+            "只输出 JSON: " + "{" + ",".join(f'"{k}":"..."' for k in targets) + "}, 无 markdown。")
+    try:
+        if prov == "agnes":
+            import openai
+            cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=2000,
+                  messages=[{"role":"system","content":_SYS[:2000]},
+                            {"role":"user","content":user}])
+            txt = r.choices[0].message.content or ""
+        else:
+            import anthropic
+            cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+            r = cli.messages.create(model=AI_MODEL, max_tokens=2000, system=_SYS[:2000],
+                  messages=[{"role":"user","content":user}])
+            txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+        txt = txt.strip().lstrip("`").rstrip("`")
+        nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+        prev = {k: data.get(k, "") for k in targets}   # 旧值快照(覆盖前), 供音字一致同步
+        for k in targets:
+            nk = (nd.get(k) or "").strip()
+            if nk:
+                data[k] = nk
+        # 音字一致: 非口播字段改了 → 在口播/字幕分段里按旧子串替换(同 _anchor_gate)
+        for k in targets:
+            old_s, new_s = prev.get(k, ""), data.get(k, "")
+            if k == "口播" or not old_s or old_s == new_s:
+                continue
+            if isinstance(data.get("口播"), str):
+                data["口播"] = data["口播"].replace(old_s, new_s)
+            if isinstance(data.get("字幕分段"), list):
+                data["字幕分段"] = [s.replace(old_s, new_s) if isinstance(s, str) else s
+                                    for s in data["字幕分段"]]
+        if _hits(data.get("口播","")):
+            data["_soup_weak"] = True
+        else:
+            data["_soup_fixed"] = True
+    except Exception:
+        data["_soup_weak"] = True
+    return
+
 
 def _polish_ai(data):
     """雕琢已有脚本的文案:把口播重写得更扎心(钩子更强/金句更狠/案例更具体),
@@ -983,7 +1071,14 @@ def write_script(topic: str, column: str = "觉醒·读古人", tone: str = "理
     import re
     if duration not in _DUR_TIER:
         duration = "60-90s"
-    safe_id = re.sub(r"[^a-z0-9一-鿿]+","_", topic.strip()) or "untitled"
+    # 契约硬化: 若 topic 本身就是一个已存在的脚本 id(原地重出存量场景),
+    # 用原文当 id, 不再 slugify — 否则 "王阳明龙场悟道AI幻觉" 里的 "AI"(大写) 被
+    # [^a-z0-9一-鿿]+ 吃掉, 写成 王阳明龙场悟道_幻觉 脏 slug, 复发 dirty-data。
+    topic_raw = topic.strip()
+    if os.path.exists(os.path.join(SCRIPTS_DIR, f"{topic_raw}.json")):
+        safe_id = topic_raw
+    else:
+        safe_id = re.sub(r"[^a-zA-Z0-9一-鿿]+","_", topic_raw) or "untitled"
     path = os.path.join(SCRIPTS_DIR, f"{safe_id}.json")
     existed = os.path.exists(path)
     if existed and not force:
