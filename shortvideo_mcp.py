@@ -35,7 +35,7 @@ os.makedirs(METRICS_DIR, exist_ok=True)
 FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
 # 默认换掉"新闻腔"YunyangNeural → YunjianNeural(激情·通透, 理性硬核不喊口号)。
 # 换声: 设 SV_VOICE=zh-CN-YunxiNeural / zh-CN-YunjianNeural / zh-CN-XiaoxiaoNeural, 或 compose 时传 voice 参。
-VOICE = os.environ.get("SV_VOICE", "zh-CN-YunjianNeural")  # 男声·激情·通透(默认, 比新闻腔生动)
+VOICE = os.environ.get("SV_VOICE", "zh-CN-YunxiNeural")  # 默认男声·阳光·通透(比 Yunjian 更亮更记, 辨识度)
 # 去播音腔: 降速+降调造"慢热沉思"质感(有特色的声音, 非纯正播报)。全库存共享, 可用 env 覆盖。
 TTS_RATE  = os.environ.get("SV_TTS_RATE",  "-15%")   # 慢热, 留白更足
 TTS_PITCH = os.environ.get("SV_TTS_PITCH", "-10Hz")  # 低沉沉稳, 去新闻腔
@@ -284,20 +284,35 @@ def _render_scene(dur, workdir, idx):
     return p
 
 def _build_ssml(text, voice=VOICE, rate=TTS_RATE, pitch=TTS_PITCH):
-    """有特色口播 = 按句注入 SSML break 微停顿 + 金句/反常识句轻强调, 打破'念稿'平调。
+    """有特色口播 = 音色+韵律双重辨识(让用户"一听就记住"):
+    ① 开场钩子句放慢+加重(break 3 + 慢读), 制造"讲古人前辈"的低沉笃定开场;
+    ② 金句/反常识/扎心判断句强强调(heavily)+前停顿, 让记忆点"叮"一下弹出;
+    ③ 段末(行动指引/收束)拉长留白, 定格情绪。
     只动韵律参数(停顿/重音), 不改音色/文字。edge-tts --ssml 走这个。"""
     import html
-    # 按自然句切, 句间 0.5s 微停顿(留白), 让口播有呼吸节奏
+    # 按自然句切, 句间微停顿(留白), 让口播有呼吸节奏
     sents = [s for s in re.split(r"(?<=[。！？])", text) if s.strip()]
+    n = len(sents)
     out = [f'<speak version="1.0" xml:lang="zh-CN" xmlns="http://www.w3.org/2001/10/synthesis">'
            f'<voice name="{voice}">']
     for i, s in enumerate(sents):
         s = html.escape(s)
-        # 金句/反常识/扎心判断句: 轻强调 (stress+0, rate +5%), 让记忆点弹出
-        emph = any(k in s for k in ("不是", "而是", "其实", "真相", "你以为", "最", "狠", "死"))
-        if emph and len(s) <= 30:
-            s = f'<emphasis degree="moderate">{s}</emphasis>'
-        out.append(f'<break strength="{2 if i in (0, len(sents)-1) else 1}"/> {s}')
+        # 金句/反常识/扎心判断句: 强强调(heavy)+放慢, 让记忆点弹出("叮"一下)
+        emph_kw = ("不是","而是","其实","真相","你以为","最","狠","死","错","你","凭什么","才是")
+        emph = any(k in s for k in emph_kw) and len(s) <= 34
+        # 段序强度: 开场(0)=3 笃定慢读; 金句=heavy; 收束(末句)=2 拉长留白; 其余=1 轻
+        if i == 0:
+            strength = 3
+        elif emph:
+            strength = 2
+        elif i == n - 1:
+            strength = 2
+        else:
+            strength = 1
+        if emph:
+            s = f'<emphasis degree="high">{s}</emphasis>'
+        # 金句前多留 0.6s 停顿让"叮"更响(靠前置 break 更强)
+        out.append(f'<break strength="{strength}"/> {s}')
     out.append("</voice></speak>")
     return "\n".join(out)
 
@@ -600,6 +615,7 @@ def _gen_script(topic, column, tone, duration: str = "60-90s"):
         ai["目标时长"] = duration
         _anchor_gate(ai)   # 引擎硬关卡: 金句缺可转发具象锚 → 强制 AGNES 重写一轮
         _soup_gate(ai)     # 引擎硬关卡: 口播/金句命中鸡汤空话或抽象名词 → 强制 AGNES 重写一轮
+        _word_budget_gate(ai, duration)  # 引擎硬关卡: 口播短于档位下限 → 强制 AGNES 补足(防配音短于画面/截断)
         return ai
     reason = (ai or {}).get("_error", "key 未配置")
     off = _gen_script_offline(topic, column, tone)
@@ -749,6 +765,79 @@ def _soup_gate(data):
             data["_soup_fixed"] = True
     except Exception:
         data["_soup_weak"] = True
+    return
+
+
+def _word_budget_gate(data, duration: str = "60-90s"):
+    """引擎硬关卡(R2 补足律): AGNES 偶尔把口播写短于档位下限 → 配音比 B-roll 画面时间线短,
+    配音结束后画面空跑(静帧+BGM无人声), 观众体感"字幕停了画面还在滚/视频没播完"。
+    本关卡: 口播字数 < 档位下限时, 强制 AGNES 把口播扩写到下限(保留原判断/古语/金句, 只补纵深,
+    不平铺注水), 同步重写字幕分段+分镜。最多 1 轮, 无 key 则标记 _word_short。
+    这是根治音画"不同步/不完整"的源头(配音是时间锚, 配音必须够长), 不是改 compose 的补丁。"""
+    tier = _DUR_TIER.get(duration)
+    if not tier:
+        return
+    lo = tier["words"][0]
+    n_spoken = len(data.get("口播", ""))
+    if n_spoken >= lo * 0.92:   # 误差容差 8%, 不触发
+        return
+    if not AI_KEY:
+        data["_word_short"] = True
+        return
+    prov = _provider()
+    target = tier["words"][1]   # 直接扩到档位上限, 一次到位不留余量
+    user = (f"这条'用AI讲古'{duration}档视频的**口播只有{n_spoken}字, 偏短**(该档下限{lo}字), 配音会比画面短, 视频会'没播完'。"
+            f"请**只扩写口播到{target}字左右**: 保留原文的判断/古语/金句/行动指引, 在中段加 1-2 层'古语×当代场景'的纵深论证"
+            "(每层换新古语或新案例, 不平铺不注水), 让口播够撑满该档时长。"
+            "同时**同步重写字幕分段**(逐句贴合新口播, 每句≤14字)和**分镜**(对齐新口播逐镜推进, 每镜5-7s)。"
+            "古语出处绝不动。只输出 JSON: {\"口播\":\"...\",\"字幕分段\":[...],\"分镜\":[{画面,时长}]} , 无 markdown。")
+
+    def _expand_once():
+        """单次 AGNES 扩写, 返回扩后的口播(未变长/异常返回 None)。"""
+        try:
+            if prov == "agnes":
+                import openai
+                cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
+                r = cli.chat.completions.create(model=AI_MODEL, max_tokens=3000,
+                      messages=[{"role":"system","content":_SYS[:2000]},
+                                {"role":"user","content":user}])
+                txt = r.choices[0].message.content or ""
+            else:
+                import anthropic
+                cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
+                r = cli.messages.create(model=AI_MODEL, max_tokens=3000, system=_SYS[:2000],
+                      messages=[{"role":"user","content":user}])
+                txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
+            txt = txt.strip().lstrip("`").rstrip("`")
+            nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+            ns = (nd.get("口播") or "").strip()
+            # 只在"确实更长且已够下限"时才接受, 防 AGNES 反向缩水/原样返回
+            if len(ns) >= lo and len(ns) > n_spoken:
+                data["_exp_spoken"] = ns
+                if isinstance(nd.get("字幕分段"), list) and nd["字幕分段"]:
+                    data["_exp_subs"] = nd["字幕分段"]
+                if isinstance(nd.get("分镜"), list) and nd["分镜"]:
+                    for sc in nd["分镜"]:
+                        try: sc["时长"] = float(str(sc.get("时长",5)).split()[0].rstrip("s").strip() or 5)
+                        except (ValueError, IndexError, AttributeError): sc["时长"] = 5.0
+                    data["_exp_scenes"] = nd["分镜"]
+                return True
+            return False
+        except Exception:
+            return False
+
+    # AGNES 扩写非确定: 同一意图有时 149→149(原样), 有时 149→450。
+    # 最多 2 轮(首次失败后再试 1 次), 命中下限即收; 仍短标记 _word_short。
+    if _expand_once() or _expand_once() or _expand_once():
+        data["口播"] = data.pop("_exp_spoken")
+        data["字幕分段"] = data.pop("_exp_subs", data.get("字幕分段"))
+        data["分镜"] = data.pop("_exp_scenes", data.get("分镜"))
+        data["_word_extended"] = True
+    else:
+        data.pop("_exp_spoken", None)
+        data.pop("_exp_subs", None)
+        data.pop("_exp_scenes", None)
+        data["_word_short"] = True
     return
 
 
@@ -1155,19 +1244,28 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
         ["ffprobe","-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1",mp3],
         text=True).strip())
     scale = 1.0 if dur_audio <= total else dur_audio / total
-    # 目标时长地板: 3min/5min 档强推下限(150/270s, 不足补拍尾镜保证纵深);
-    # 60-90s 短脚本档地板取配音实际时长(不足不强推60s, 避免尾部静默过冲)
+    # 音画对齐根治(用户报"字幕不同步/视频不完整"): 配音短于 B-roll 画面时间线时,
+    # 旧逻辑把 floor 强推成配音实际时长之外, 画面满铺而配音已结束 → 尾部空跑(静帧+BGM无人声),
+    # 观众体感"字幕停了画面还在滚/视频没播完"。现按 目标字数 定真实目标配音时长,
+    # 画面与配音同一起点同一段落: 配音是唯一的"时间锚", 画面截/补到配音时长, 绝不留静音尾镜。
     _TIER = data.get("目标时长", "60-90s")
-    _FLOOR = {"3min": 150, "5min": 270}
     if os.environ.get("SV_MIN_DUR"):
         TARGET_FLOOR = float(os.environ["SV_MIN_DUR"])
-    elif _TIER in _FLOOR:
-        TARGET_FLOOR = _FLOOR[_TIER]
+    elif _TIER in ("3min", "5min"):
+        # 长档: 强推下限保证纵深(配音不足→下面 _ensure_full_narration 补拍口播, 不硬拉长画面)
+        TARGET_FLOOR = {"3min": 150, "5min": 270}[_TIER]
     else:
-        TARGET_FLOOR = dur_audio  # 短脚本档: 跟配音走, 画面=配音时长, 无静默
+        # 短脚本档: 画面=配音实际时长(配音是唯一时间锚), 无静默尾镜
+        TARGET_FLOOR = dur_audio
     if scale * total < TARGET_FLOOR:
         extra_scaled = TARGET_FLOOR - scale * total      # 还差多少秒
         per_dur[-1] = per_dur[-1] + extra_scaled / scale # 补回未缩放镜长
+    elif _TIER not in ("3min", "5min") and total > dur_audio + 5:
+        # 短档 CAP(天花板): 画面时间线 > 配音+5s 时, 静帧会空跑成"静默尾镜"。
+        # 分镜按目标字数预估, 但 TTS 实际配音常比预估短 → 画面长于配音 → 配音结束后
+        # 画面仍在滚。此处等比缩所有分镜到配音时长, 保证配音=唯一时间锚, 零静默尾。
+        scale = dur_audio / total
+        per_dur = [d * scale for d in per_dur]
     # 素材: 有 Pexels key 就拉真实图片做 Ken Burns B-roll, 没有退回霓虹网格
     imgs = _fetch_images(data.get("免费素材关键词", []), workdir)
     vids = []
