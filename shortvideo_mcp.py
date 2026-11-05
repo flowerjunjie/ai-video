@@ -525,6 +525,36 @@ def _scrub_fake_contrast(data):
     return data
 
 
+def _robust_json(text: str):
+    """AGNES/LLM 返回 JSON 鲁棒解析: 去代码块 → 首{到末}切片 → 直接 loads;
+    失败(截断/多尾逗号)时逐层补全未闭合的括号再 loads。返回 dict 或 None。"""
+    import json as _j
+    t = (text or "").strip().lstrip("`").rstrip("`")
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0:
+        return None
+    cand = t[a:b + 1] if b > a else t[a:]
+    for c in (cand, cand + "}" * 4, cand + "\"}]}"):
+        try:
+            return _j.loads(c)
+        except Exception:
+            continue
+    # 截断且补括号仍失败: 逐个闭合括号试探
+    stack = []
+    for ch in cand:
+        if ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+    closed = cand
+    for ch in reversed(stack):
+        closed += "}" if ch == "{" else "]"
+    try:
+        return _j.loads(closed)
+    except Exception:
+        return None
+
 def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
     """调用 AGNES(OpenAI 兼容,默认)或 Anthropic 生成完整脚本 dict。无 key 返回 None。"""
     if not AI_KEY:
@@ -558,8 +588,9 @@ def _gen_script_ai(topic, column, tone, duration: str = "60-90s"):
             r = cli.messages.create(model=AI_MODEL, max_tokens=mtok, system=_SYS,
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
-        txt = txt.strip().lstrip("`").rstrip("`")
-        data = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+        data = _robust_json(txt)
+        if data is None:
+            raise ValueError("AGNES 返回 JSON 解析失败(截断/格式)")
         for k in ("标题候选","分镜","字幕分段"):
             data.setdefault(k, [])
         # 契约硬化: AGNES 偶发把"封面文案"返回成 list(如["行1","行2"]), 而
@@ -670,8 +701,9 @@ def _anchor_gate(data):
             r = cli.messages.create(model=AI_MODEL, max_tokens=200, system=_SYS[:2000],
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
-        txt = txt.strip().lstrip("`").rstrip("`")
-        nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+        nd = _robust_json(txt)
+        if nd is None:
+            return  # 解析失败, 保持原金句(不阻塞 gate)
         new_gold = (nd.get("金句") or "").strip()
         if new_gold and any(w in new_gold for w in _ANCHOR_WORDS):
             data["金句"] = new_gold
@@ -742,8 +774,9 @@ def _soup_gate(data):
             r = cli.messages.create(model=AI_MODEL, max_tokens=2000, system=_SYS[:2000],
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
-        txt = txt.strip().lstrip("`").rstrip("`")
-        nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+        nd = _robust_json(txt)
+        if nd is None:
+            raise ValueError("AGNES 返回 JSON 解析失败(截断/格式)")
         prev = {k: data.get(k, "") for k in targets}   # 旧值快照(覆盖前), 供音字一致同步
         for k in targets:
             nk = (nd.get(k) or "").strip()
@@ -786,6 +819,9 @@ def _word_budget_gate(data, duration: str = "60-90s"):
         return
     prov = _provider()
     target = tier["words"][1]   # 直接扩到档位上限, 一次到位不留余量
+    # 长档输出更长(口播650-820 + 20-28分镜), 写死 3000 token 会被截断 → JSON 解析失败/缩水,
+    # 3轮全 miss。按档位放大扩写预算: 短档3000 / 3min 5000 / 5min 8000。
+    _mtok = 8000 if duration == "5min" else (5000 if duration == "3min" else 3000)
     user = (f"这条'用AI讲古'{duration}档视频的**口播只有{n_spoken}字, 偏短**(该档下限{lo}字), 配音会比画面短, 视频会'没播完'。"
             f"请**只扩写口播到{target}字左右**: 保留原文的判断/古语/金句/行动指引, 在中段加 1-2 层'古语×当代场景'的纵深论证"
             "(每层换新古语或新案例, 不平铺不注水), 让口播够撑满该档时长。"
@@ -798,18 +834,19 @@ def _word_budget_gate(data, duration: str = "60-90s"):
             if prov == "agnes":
                 import openai
                 cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
-                r = cli.chat.completions.create(model=AI_MODEL, max_tokens=3000,
+                r = cli.chat.completions.create(model=AI_MODEL, max_tokens=_mtok,
                       messages=[{"role":"system","content":_SYS[:2000]},
                                 {"role":"user","content":user}])
                 txt = r.choices[0].message.content or ""
             else:
                 import anthropic
                 cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
-                r = cli.messages.create(model=AI_MODEL, max_tokens=3000, system=_SYS[:2000],
+                r = cli.messages.create(model=AI_MODEL, max_tokens=_mtok, system=_SYS[:2000],
                       messages=[{"role":"user","content":user}])
                 txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
-            txt = txt.strip().lstrip("`").rstrip("`")
-            nd = json.loads(txt[txt.find("{"):txt.rfind("}")+1])
+            nd = _robust_json(txt)
+            if nd is None:
+                return False
             ns = (nd.get("口播") or "").strip()
             # 只在"确实更长且已够下限"时才接受, 防 AGNES 反向缩水/原样返回
             if len(ns) >= lo and len(ns) > n_spoken:
@@ -863,18 +900,19 @@ def _polish_ai(data):
         if prov == "agnes":
             import openai
             cli = openai.OpenAI(api_key=AI_KEY, base_url=AGNES_URL)
-            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=2000,
+            r = cli.chat.completions.create(model=AI_MODEL, max_tokens=4000,
                   messages=[{"role":"system","content":sys_},
                             {"role":"user","content":user}])
             txt = r.choices[0].message.content or ""
         else:
             import anthropic
             cli = anthropic.Anthropic(api_key=AI_KEY, base_url=ANTHRO_URL or None)
-            r = cli.messages.create(model=AI_MODEL, max_tokens=2000, system=sys_,
+            r = cli.messages.create(model=AI_MODEL, max_tokens=4000, system=sys_,
                   messages=[{"role":"user","content":user}])
             txt = "".join(b.text for b in r.content if getattr(b,"type","")=="text")
-        ptxt = txt.strip().lstrip("`").rstrip("`")
-        p = json.loads(ptxt[ptxt.find("{"):ptxt.rfind("}")+1])
+        p = _robust_json(txt)
+        if p is None:
+            raise ValueError("AGNES 返回 JSON 解析失败(截断/格式)")
         got = {k: p[k] for k in ("口播","字幕分段","分镜") if k in p}
         if "口播" not in got:
             raise ValueError(f"AGNES 返回缺 口播 字段: keys={list(p.keys())[:8]}")
