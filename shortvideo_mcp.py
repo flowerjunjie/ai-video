@@ -1084,6 +1084,18 @@ def _check_banned(text: str):
     hits = [w for w in _BANNED if w in text]
     return {"命中": hits, "通过": not hits}
 
+# 抖音"绝对化用语"合规雷(最高级表述, 广告法+平台审核均判违规):
+# 最/第一/绝对/极致/顶级/百分百/必中/稳赚 等。区别于 _BANNED(玄学承诺), 这是另一类雷。
+_SUPERLATIVE = ["第一","绝对","极致","顶级","百分之百","百分百","必中","稳赚","100%","无悬念","万能","神药"]
+_SUPERLATIVE_RE = re.compile(r"最[一顶绝强良佳好]|最(?![进一]步)")  # "最X"型: 最强/最狠/最好/第一... (排除"最进")
+
+def _check_superlative(text: str):
+    """抖音绝对化用语合规(广告法禁用): 命中即列词, 供发布前复核/替换。
+    比 _check_banned(玄学) 更宽 — 最高级表述('最强/第一/绝对') 平台审核同样判违规。
+    返回 {命中, 通过}。"""
+    hits = sorted({w for w in _SUPERLATIVE if w in text} | set(_SUPERLATIVE_RE.findall(text or "")))
+    return {"命中": hits, "通过": not hits}
+
 # ── 去AI味护栏: 借鉴"太上老君炼丹炉"deai-rulebook — 把最硬的壳/腔识别出来 ──
 # 假对比 = 观众一眼认出的 AI 味第一号; 伪深度路标/空开场/大词腔 = 口播异味 Top10 精选。
 _DEAI = {
@@ -1519,6 +1531,7 @@ def prepare_publish(ids, platform: str = "抖音", schedule: str = "今天 18:00
             "正文字案": d.get("口播", "")[:120],
             "合规标注": "内容由 AI 生成(依据各平台 AI 内容披露规则)",
             "禁用语检查": _check_banned(d.get("口播", "") + " " + " ".join(titles)),
+            "绝对化用语检查": _check_superlative(d.get("口播", "") + " " + " ".join(titles) + " " + str(d.get("金句", ""))),
             "成片": mp4 if os.path.exists(mp4) else "(未合成,先 compose_video)",
             "封面": cover if os.path.exists(cover) else "(未合成)",
             # P1 快剪双版: 同一条吃两次流量池, 主片(完整论证) + 35s快剪(完播结构)
