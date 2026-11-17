@@ -997,9 +997,17 @@ _FALLBACK_EN = [
 def _fetch_images(keywords, workdir):
     """按关键词拉 Pexels 免费图片(curl 实现, 避免 urllib 代理问题)。
     每个关键词独立映射到英文检索词, 保证多镜画面不重复; 未命中走兜底池。
-    返回 [(关键词, 图片路径), ...]; 无 key 或拉取失败返回 []。"""
+    返回 [(关键词, 图片路径), ...]; 无 key 或拉取失败返回 []。
+    无 key 时优先复用 workdir 已缓存的 img_*.jpg(历史 Pexels 拉取产物), 命中即用 B-roll,
+    不命中才 [] 退回霓虹网格 — 让配过 key 的题材重出也能吃 B-roll, 不必每次都联网。"""
     if not PEXELS_KEY:
-        return []
+        cached = sorted(
+            os.path.join(workdir, f) for f in os.listdir(workdir)
+            if re.match(r"^img_\d+_\d+\.(jpg|jpeg|png)$", f)
+            and os.path.getsize(os.path.join(workdir, f)) > 1000
+        )
+        # 首元素关键词用占位(调用点仅取第二元素路径渲染, kw 不参与画面), 按文件名稳定排序
+        return [("cached", p) for p in cached]
     import shlex, urllib.parse
     got = []
     seen_en = set()   # 去重: 已用过的英文检索词不再重复, 逼画面多样化
