@@ -32,7 +32,7 @@ os.makedirs(ASSETS_DIR,  exist_ok=True)
 os.makedirs(PUBLISH_DIR, exist_ok=True)
 os.makedirs(METRICS_DIR, exist_ok=True)
 
-FONT  = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+FONT  = os.path.join(BASE_DIR, "fonts", "zh.ttf")  # Noto Sans CJK SC: 标点字形全, 取代 DroidSansFallbackFull(缺…—–·“”)
 # 默认换掉"新闻腔"YunyangNeural → YunjianNeural(激情·通透, 理性硬核不喊口号)。
 # 换声: 设 SV_VOICE=zh-CN-YunxiNeural / zh-CN-YunjianNeural / zh-CN-XiaoxiaoNeural, 或 compose 时传 voice 参。
 VOICE = os.environ.get("SV_VOICE", "zh-CN-YunxiNeural")  # 默认男声·阳光·通透(比 Yunjian 更亮更记, 辨识度)
@@ -65,23 +65,68 @@ def _run(cmd, timeout=300):
         raise RuntimeError(f"cmd failed (exit {r.returncode}):\n{r.stderr[-3000:]}")
     return r
 
+# ── 字幕字体 + 标点净化 + 超长自适应 ─────────────────────────────────────────
+# 字幕渲染字体: 本机 Noto Sans CJK SC(fonts/zh.ttf, 标点字形全), 取代 DroidSansFallbackFull
+# (后者 2016 build 缺 …—–·“”‘’ 等字形 → libass fallback 画豆腐块=标点乱码根因)。
+# 该字体不在系统 fontconfig 路径上, 靠 ffmpeg ass 滤镜的 fontsdir= 选项喂给 libass。
+_SUB_FONT    = "Noto Sans CJK SC"
+_SUB_FONTDIR = os.path.join(BASE_DIR, "fonts")
+# 字体缺字形 → 替换成库里有的安全标点(全角标点 Noto 全有), 双保险兜底
+_PUNCT_SAFE = str.maketrans({
+    "…": "...",   # … 省略号
+    "—": "－", # — 全角横线(库内全角, 若缺则下方再归一)
+    "–": "－",
+    "·": "・", # · 中点 → 全角片假名中点(东亚字幕惯用, Noto 必含)
+    "“": "＂", # " 全角引号
+    "”": "＂",
+    "‘": "＇",
+    "’": "＇",
+})
+def _san_sub(t):
+    """字幕文本净化: 字体缺字形标点 → 安全等价, 去掉首尾空格。幂等。"""
+    return (t or "").strip().translate(_PUNCT_SAFE)
+
+def _sub_fit(text, maxlen=12):
+    """超长字幕自适应: CJK 无空格, 超过 maxlen 半角宽就折成两行(\\N 居中堆叠),
+    保住整句不截断(旧 textwrap.shorten 硬砍 18 字, 一行 18 全角≈1150px>1080 画布→显示不开)。
+    竖屏 64px 字号, 一行 12 全角字≈768px 留足边距; 折行后两行居中, 视觉完整。"""
+    t = _san_sub(text)
+    if len(t) <= maxlen:
+        return t
+    half = (len(t) + 1) // 2
+    # 优先在标点处折, 断句更自然
+    cut = half
+    for p in ("，", "、", "；", "：", " ", "，", ".", " "):
+        i = t.rfind(p, 1, half + half - 2)
+        if i > half // 2:
+            cut = i + 1; break
+    return t[:cut].rstrip("，、；： ") + "\\N" + t[cut:].lstrip("，、；： ")
+
 def _build_srt(segments, per_dur, out, cues=None):
     def ts(sec):
         h=int(sec//3600); m=int((sec%3600)//60); s=int(sec%60); ms=int((sec-int(sec))*1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
     lines=[]
+    def srt_line(seg):  # SRT 两行居中: 超长折成两行(换行), 标点净化
+        s = _san_sub(seg)
+        if len(s) <= 12: return s
+        half=(len(s)+1)//2
+        for p in ("，","、","；","："," ","。"):
+            i=s.rfind(p,1,half+half-2)
+            if i>half//2: half=i+1; break
+        return s[:half].rstrip("，、；：。 ")+"\n"+s[half:].lstrip("，、；：。 ")
     if cues and len(cues) == len(segments):
         for i,(seg,(st,en)) in enumerate(zip(segments, cues)):
-            lines.append(f"{i+1}\n{ts(st)} --> {ts(en)}\n{textwrap.shorten(seg,20)}\n")
+            lines.append(f"{i+1}\n{ts(st)} --> {ts(en)}\n{srt_line(seg)}\n")
     else:
         t=0
         for i,(seg,d) in enumerate(zip(segments, per_dur)):
-            lines.append(f"{i+1}\n{ts(t)} --> {ts(t+d)}\n{textwrap.shorten(seg,20)}\n")
+            lines.append(f"{i+1}\n{ts(t)} --> {ts(t+d)}\n{srt_line(seg)}\n")
             t+=d
     open(out,"w").write("\n".join(lines))
     return out
 
-def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback", cues=None):
+def _build_ass(segments, chapters, total, out, font=_SUB_FONT, cues=None):
     """双行字幕: 顶部章节小字幕(古语/论点) + 底部口播逐句。
     segments=底部逐句, chapters=[(起始秒, 文案)] 顶部论点切换点。
     cues=[(start,end)] 与 segments 同序的逐句真实起止(TTS 时间戳);
@@ -114,20 +159,21 @@ def _build_ass(segments, chapters, total, out, font="Droid Sans Fallback", cues=
     for (start, txt) in chapters:
         end = next((s for s, _ in chapters if s > start), total)
         flash_end = min(start + 3.0, end)  # 只闪现3s后消失
-        script.append(f"Dialogue: 0,{a_t(start)},{a_t(flash_end)},顶部,,0,0,0,,{{\\fad(300,300)}}{txt}")
+        script.append(f"Dialogue: 0,{a_t(start)},{a_t(flash_end)},顶部,,0,0,0,,{{\\fad(300,300)}}{_san_sub(txt)}")
     # 底部逐句行: 优先用 TTS 逐句真实起止(cues), 让字幕跟配音走; 缺则等分兜底
+    # 每句 _sub_fit: 超长折两行保整句(不硬截), 标点净化防乱码
     if cues and len(cues) == len(segments):
         for i, seg in enumerate(segments):
             st, en = cues[i]
             en = min(en, total)
             if en <= st: en = st + 0.1
-            script.append(f"Dialogue: 1,{a_t(st)},{a_t(en)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
+            script.append(f"Dialogue: 1,{a_t(st)},{a_t(en)},底部,,0,0,0,,{_sub_fit(seg)}")
     else:
         t = 0.0
         seg_durs = [total/len(segments)]*len(segments) if segments else []
         for i, seg in enumerate(segments):
             d = seg_durs[i]
-            script.append(f"Dialogue: 1,{a_t(t)},{a_t(t+d)},底部,,0,0,0,,{textwrap.shorten(seg,18)}")
+            script.append(f"Dialogue: 1,{a_t(t)},{a_t(t+d)},底部,,0,0,0,,{_sub_fit(seg)}")
             t += d
     open(out, "w").write("\n".join(script))
     return out
@@ -194,7 +240,7 @@ def _pick_number_cards(data, n=2):
         if len(out)>=n: break
     return out
 
-def _build_flower_ass(data, cues, total, out, font="Droid Sans Fallback"):
+def _build_flower_ass(data, cues, total, out, font=_SUB_FONT):
     """花字关键词弹出层(第三层 ASS, 烧在底部字幕上方)。
     每个强词跟配音锚点弹出: 放大定格+淡入淡出, 落在画面中上区(不撞顶/底字幕)。
     锚点=该词在口播里的首次出现句对应的 VTT 时刻; 缺 VTT 则按时长均分定位。"""
@@ -1367,23 +1413,26 @@ def compose_video(script_id: str, voice: str = VOICE) -> dict:
     # 花字关键词弹出层(视觉化可截图金句, 传播记忆点): 有强词才烧
     flower_ass = _build_flower_ass(data, cues, real_total,
                                    os.path.join(workdir,"flower.ass"))
-    flower_opt = ("ass=" + flower_ass.replace(":","\\:") + ":" if flower_ass else "")
+    # fontsdir: Noto Sans CJK SC 不在系统 fontconfig, 靠 ass/subtitles 滤镜的 fontsdir 喂 libass,
+    # 否则 fallback 到 Droid 缺字形 → 标点乱码。ass 滤镜语法: ass=FILE:fontsdir=DIR(冒号需转义)
+    _fd = _SUB_FONTDIR.replace(":","\\:")
+    flower_opt = ("ass=" + flower_ass.replace(":","\\:") + f":fontsdir={_fd}" if flower_ass else "")
     sub_opts = ""
     if chapters:
         # 章节按等分对齐到论点切换时刻
         ch_n = len(chapters)
         step = real_total / ch_n
-        chapters_aligned = [(round(i*step,1), textwrap.shorten(c,14)) for i,c in enumerate(chapters)]
+        chapters_aligned = [(round(i*step,1), _san_sub(c)) for i,c in enumerate(chapters)]
         ass = os.path.join(workdir,"sub.ass")
         _build_ass(srt_segs, chapters_aligned, real_total, ass, cues=cues)
-        sub_opts = "ass=" + ass.replace(":","\\:") + ":"
+        sub_opts = "ass=" + ass.replace(":","\\:") + f":fontsdir={_fd}"
     else:
         srt = os.path.join(workdir,"sub.srt")
         _build_srt(srt_segs, srt_durs, srt, cues=cues)
         srt_esc = srt.replace(":","\\:")
         sub_opts = ("subtitles=" + srt_esc + ":"
-                    f"fontsdir={FONT}:force_style="
-                    "'FontName=Droid Sans Fallback,FontSize=32,FontColour=&H00FFFFFF,"
+                    f"fontsdir={_fd}:force_style="
+                    f"'FontName={_SUB_FONT},FontSize=32,FontColour=&H00FFFFFF,"
                     "OutlineColour=&H000a0e1a,Outline=2,MarginV=160,Alignment=2':")
     # -vf: sub_opts 与 flower_opt 是两个独立滤镜节点, 必须逗号隔开, 别字符串硬拼(会粘成一条错误路径)
     vf_front = (sub_opts + "," + flower_opt) if flower_opt else sub_opts
