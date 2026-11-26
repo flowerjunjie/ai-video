@@ -1,0 +1,95 @@
+{
+ "title": "老子无为：你拼命做的事，可能不是道",
+ "takes": [
+  {
+   "take": "T01_open",
+   "lines": [
+    {"id": 1, "text": "老子写过一本书，只有五千字。", "spoken": "老子写过一本书，只有五千字。", "hero": "BigText 五千字; Stamp 道德经", "typed": "五千字", "gap_after": 0.8},
+    {"id": 2, "text": "两千五百年了，没有人读完过。", "spoken": "两千五百年了，没有人读完过。", "hero": "BigText 读完; Counter 2500", "typed": "两千五百年"},
+    {"id": 3, "text": "第48章，他说了一句反直觉的话。", "spoken": "第48章，他说了一句反直觉的话。", "hero": "Card 第48章; PenMark 反直觉", "typed": "第48章"},
+    {"id": 4, "text": "为学日益，为道日损。", "spoken": "为学日益，为道日损。", "hero": "BigText 为道日损; FilmFrame", "typed": "为道日损", "gap_after": 1.0},
+    {"id": 5, "text": "你越学，越多。你修道，越少。", "spoken": "你越学，越多。你修道，越少。", "hero": "PaperDoc 多 vs 少; StringLine", "typed": "多 · 少"}
+   ]
+  },
+  {
+   "take": "T02_wangwei",
+   "lines": [
+    {"id": 6, "text": "大多数人理解错了。", "spoken": "大多数人理解错了。", "hero": "BigText 理解错了; Chalk X", "typed": "理解错了"},
+    {"id": 7, "text": "他们以为无为就是躺平。", "spoken": "他们以为无为就是躺平。", "hero": "Card 躺平; Stamp 错", "typed": "躺平"},
+    {"id": 8, "text": "老子说的不是不做。是不妄为。", "spoken": "老子说的不是不做，是不妄为。", "hero": "BigText 不妄为; PenMark 妄", "typed": "不妄为"},
+    {"id": 9, "text": "第40章：反者道之动。", "spoken": "第40章，反者道之动。", "hero": "PaperDoc 反者道之动; Holes", "typed": "反者道之动", "gap_after": 0.8},
+    {"id": 10, "text": "你越使劲，越偏离。走到极致，就反了。", "spoken": "你越使劲，越偏离。走到极致，就反了。", "hero": "StringLine 偏离; BigText 反了", "typed": "越使劲 · 越偏离"}
+   ]
+  },
+  {
+   "take": "T03_sun",
+   "lines": [
+    {"id": 11, "text": "那到底损什么？", "spoken": "那到底损什么？", "hero": "BigText 损什么; Counter ?", "typed": "损什么"},
+    {"id": 12, "text": "不是损能力。是损那层'应该'。", "spoken": "不是损能力，是损那层应该。", "hero": "Card 应该; PenMark 应该", "typed": "'应该'那层"},
+    {"id": 13, "text": "我觉得我应该更努力。", "spoken": "我觉得我应该更努力。", "hero": "PaperDoc 我应该更努力; Chalk", "typed": "我应该"},
+    {"id": 14, "text": "我觉得我应该更合群。", "spoken": "我觉得我应该更合群。", "hero": "PaperDoc 我应该更合群; Chalk", "typed": "我应该"},
+    {"id": 15, "text": "这些'应该'，不是你的。是你背的。", "spoken": "这些应该，不是你的。是你背的。", "hero": "BigText 你背的; Stamp 背", "typed": "你背的", "gap_after": 1.0}
+   ]
+  },
+  {
+   "take": "T04_shui",
+   "lines": [
+    {"id": 16, "text": "老子用水讲道理。第78章。", "spoken": "老子用水讲道理。第78章。", "hero": "Card 第78章; PenMark 水", "typed": "水"},
+    {"id": 17, "text": "天下莫柔弱于水。", "spoken": "天下莫柔弱于水。", "hero": "BigText 莫柔弱; FilmFrame", "typed": "莫柔弱"},
+    {"id": 18, "text": "而攻坚强者，莫之能胜。", "spoken": "而攻坚强者，莫之能胜。", "hero": "BigText 莫之能胜; Counter ∞", "typed": "莫之能胜"},
+    {"id": 19, "text": "水不是弱。是刚克不了它。", "spoken": "水不是弱，是刚克不了它。", "hero": "PaperDoc 水克刚; StringLine", "typed": "水克刚"},
+    {"id": 20, "text": "你越硬，越脆。你越柔，越难打碎。", "spoken": "你越硬，越脆。你越柔，越难打碎。", "hero": "Card 硬→脆; BigText 柔", "typed": "硬·脆 / 柔·难碎", "gap_after": 1.0}
+   ]
+  },
+  {
+   "take": "T05_buzheng",
+   "lines": [
+    {"id": 21, "text": "不争，不是不争取。", "spoken": "不争，不是不争取。", "hero": "BigText 不是不争取; PenMark 争", "typed": "不是不争取"},
+    {"id": 22, "text": "第8章：后其身而身先。", "spoken": "第8章，后其身而身先。", "hero": "Card 后其身; PaperDoc 第8章", "typed": "后其身"},
+    {"id": 23, "text": "先让别人。你自己的位置，反而上去了。", "spoken": "先让别人。你自己的位置，反而上去了。", "hero": "StringLine 让→上; Counter ↑", "typed": "让 → 上"},
+    {"id": 24, "text": "你拼命往前抢，所有人都在你前面。", "spoken": "你拼命往前抢，所有人都在你前面。", "hero": "BigText 全在前; Chalk 抢", "typed": "全在前"},
+    {"id": 25, "text": "你往后面让一步，所有人都在你后面。", "spoken": "你往后面让一步，所有人都在你后面。", "hero": "BigText 全在后; Chalk 让", "typed": "全在后", "gap_after": 1.0}
+   ]
+  },
+  {
+   "take": "T06_wuwei",
+   "lines": [
+    {"id": 26, "text": "第37章：道常无为而无不为。", "spoken": "第37章，道常无为而无不为。", "hero": "BigText 无而不为; FilmFrame", "typed": "无为·无不为"},
+    {"id": 27, "text": "这个'无'字，90%的人读错了。", "spoken": "这个无字，90%的人读错了。", "hero": "Card 无; PenMark 无", "typed": "'无'字"},
+    {"id": 28, "text": "它不是'没有'。是'不妄'。", "spoken": "它不是没有，是不妄。", "hero": "BigText 不妄; Stamp 妄", "typed": "不妄"},
+    {"id": 29, "text": "不妄为，就什么都能做到。", "spoken": "不妄为，就什么都能做到。", "hero": "PaperDoc 不妄→能做到; StringLine", "typed": "不妄 → 能做到"},
+    {"id": 30, "text": "你做的事越对，你越不用用力。", "spoken": "你做的事越对，你越不用用力。", "hero": "BigText 不用用力; Counter 0", "typed": "不用用力", "gap_after": 1.0}
+   ]
+  },
+  {
+   "take": "T07_buzu'ai",
+   "lines": [
+    {"id": 31, "text": "你不需要赢。你只需要，不阻碍。", "spoken": "你不需要赢，你只需要，不阻碍。", "hero": "BigText 不阻碍; Card 不需要赢", "typed": "不阻碍"},
+    {"id": 32, "text": "你心里有个清单：我应该做A、做B、做C。", "spoken": "你心里有个清单，我应该做A、做B、做C。", "hero": "PaperDoc 应该清单; Chalk A·B·C", "typed": "应该清单"},
+    {"id": 33, "text": "今天，把那个清单拿出来。", "spoken": "今天，把那个清单拿出来。", "hero": "Stamp 拿出来; PenMark", "typed": "拿出来"},
+    {"id": 34, "text": "删掉你觉得'应该'的那几行。", "spoken": "删掉你觉得应该的那几行。", "hero": "Chalk 删; StringLine 删", "typed": "删掉"},
+    {"id": 35, "text": "剩下的，才是你本来要做的。", "spoken": "剩下的，才是你本来要做的。", "hero": "BigText 本来要做; FilmFrame", "typed": "本来要做", "gap_after": 1.0}
+   ]
+  },
+  {
+   "take": "T08_close",
+   "lines": [
+    {"id": 36, "text": "损到不能再损的时候。", "spoken": "损到不能再损的时候。", "hero": "Counter 0; BigText 不能再损", "typed": "不能再损"},
+    {"id": 37, "text": "你终于看清：你真正在乎的，只有几件。", "spoken": "你终于看清，你真正在乎的，只有几件。", "hero": "Card 只有几件; PenMark", "typed": "只有几件"},
+    {"id": 38, "text": "工作、关系、自我。三条线。", "spoken": "工作、关系、自我。三条线。", "hero": "StringLine 三线; Counter 3", "typed": "三条线"},
+    {"id": 39, "text": "老子说：为道日损。", "spoken": "老子说，为道日损。", "hero": "BigText 为道日损; Stamp 道", "typed": "为道日损"},
+    {"id": 40, "text": "不是做加法。是做减法。", "spoken": "不是做加法，是做减法。", "hero": "Card 减; PenMark +→-", "typed": "做减法"},
+    {"id": 41, "text": "减到不能再减，无为，就成了无不为。", "spoken": "减到不能再减，无为，就成了无不为。", "hero": "BigText 无不为; FilmFrame", "typed": "无不为"},
+    {"id": 42, "text": "五千字，两千五百年。你只记住一句话就够了：先停，再动。", "spoken": "五千字，两千五百年。你只记住一句话就够了，先停，再动。", "hero": "pull back: 停 · 动", "typed": ""}
+   ]
+  }
+ ],
+ "fact_notes": [
+  "《道德经》第48章：为学日益，为道日损。损之又损，以至于无为，无为而无不为。",
+  "《道德经》第40章：反者道之动，弱者道之用。",
+  "《道德经》第78章：天下莫柔弱于水，而攻坚强者莫之能胜。",
+  "《道德经》第37章：道常无为而无不为。",
+  "《道德经》第8章：上善若水……后其身而身先，外其身而身安。",
+  "《道德经》第81章：天之道，损有余而补不足。"
+ ]
+}
